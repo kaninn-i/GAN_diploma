@@ -36,6 +36,8 @@ def extract_crops(dataset_path, output_path):
             crop = img[y1:y2, x1:x2]
             if crop.size == 0:
                 continue
+            
+            crop = cv2.resize(crop, (64, 64))
 
             cls_dir = os.path.join(output_path, f"class_{cls}")
             os.makedirs(cls_dir, exist_ok=True)

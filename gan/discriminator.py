@@ -25,7 +25,8 @@ class Discriminator(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),
 
             nn.Conv2d(feature_maps * 8, 1, 4, 1, 0, bias=False),
-            nn.Sigmoid()
+            # nn.Sigmoid()
+            nn.Tanh()
         )
 
     def forward(self, img, labels):

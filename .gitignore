@@ -1,5 +1,6 @@
-test/data/
+trash/data/
 .venv
 cgan_output
 gan_output
-data
+dataset
+crops

@@ -2,3 +2,4 @@ test/data/
 .venv
 cgan_output
 gan_output
+data

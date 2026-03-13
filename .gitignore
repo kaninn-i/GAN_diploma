@@ -7,3 +7,4 @@ crops
 gan_weights
 __pycache__/
 generated_objects/
+dataset_augmented/

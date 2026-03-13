@@ -3,7 +3,7 @@ import torch
 
 from dataset_utils import extract_crops
 from gan_training import train_gan
-from augmentation import generate_objects, insert_objects
+from augmentation import generate_objects, merge_datasets
 
 
 def run_pipeline(
@@ -43,7 +43,7 @@ def run_pipeline(
 
     # 4
     print("\n[4/4] Вставка объектов...")
-    insert_objects(
+    merge_datasets(
         original_dataset=dataset_path,
         generated_objects_path=generated_path,
         output_dataset=output_dataset

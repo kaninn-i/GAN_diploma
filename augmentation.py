@@ -53,51 +53,159 @@ def generate_objects(
 
 
 
-def insert_objects(original_dataset, generated_objects_path, output_dataset):
+# def insert_objects(original_dataset, generated_objects_path, output_dataset):
+
+#     os.makedirs(output_dataset, exist_ok=True)
+
+#     generated_images = [
+#         f for f in os.listdir(generated_objects_path)
+#         if f.endswith(".png")
+#     ]
+
+#     original_images = [
+#         f for f in os.listdir(original_dataset)
+#         if f.endswith(".png") or f.endswith(".jpg")
+#     ]
+
+#     print(f"Найдено {len(generated_images)} сгенерированных объектов")
+
+#     for img_name in original_images:
+
+#         img_path = os.path.join(original_dataset, img_name)
+#         image = cv2.imread(img_path)
+
+#         if image is None:
+#             continue
+
+#         h, w = image.shape[:2]
+
+#         # выбираем случайный объект
+#         obj_name = random.choice(generated_images)
+#         obj_path = os.path.join(generated_objects_path, obj_name)
+
+#         obj = cv2.imread(obj_path)
+
+#         if obj is None:
+#             continue
+
+#         oh, ow = obj.shape[:2]
+
+#         # случайная позиция
+#         x = random.randint(0, max(1, w - ow))
+#         y = random.randint(0, max(1, h - oh))
+
+#         # вставка
+#         image[y:y+oh, x:x+ow] = obj
+
+#         save_path = os.path.join(output_dataset, img_name)
+#         cv2.imwrite(save_path, image)
+
+#     print("Вставка объектов завершена.")
+
+
+import os
+import random
+import cv2
+
+
+# def insert_objects(original_dataset, generated_objects_path, output_dataset):
+
+#     os.makedirs(output_dataset, exist_ok=True)
+
+#     generated_images = [
+#         f for f in os.listdir(generated_objects_path)
+#         if f.endswith(".png")
+#     ]
+
+#     # рекурсивно ищем все изображения
+#     original_images = []
+
+#     for root, _, files in os.walk(original_dataset):
+#         for file in files:
+#             if file.endswith(".png") or file.endswith(".jpg"):
+#                 original_images.append(os.path.join(root, file))
+
+#     print(f"Найдено оригинальных изображений: {len(original_images)}")
+#     print(f"Найдено сгенерированных объектов: {len(generated_images)}")
+
+#     for img_path in original_images:
+
+#         image = cv2.imread(img_path)
+
+#         if image is None:
+#             continue
+
+#         h, w = image.shape[:2]
+
+#         obj_name = random.choice(generated_images)
+#         obj_path = os.path.join(generated_objects_path, obj_name)
+
+#         obj = cv2.imread(obj_path)
+
+#         if obj is None:
+#             continue
+
+#         oh, ow = obj.shape[:2]
+
+#         x = random.randint(0, max(1, w - ow))
+#         y = random.randint(0, max(1, h - oh))
+
+#         # проверяем границы
+#         y2 = min(y + oh, h)
+#         x2 = min(x + ow, w)
+
+#         # корректируем размеры объекта
+#         obj_crop = obj[:y2 - y, :x2 - x]
+
+#         image[y:y2, x:x2] = obj_crop
+
+#         save_name = os.path.basename(img_path)
+
+#         save_path = os.path.join(output_dataset, save_name)
+
+#         cv2.imwrite(save_path, image)
+
+#     print("Вставка объектов завершена.")
+
+import os
+import shutil
+
+
+import os
+import shutil
+
+
+def merge_datasets(original_dataset, generated_objects_path, output_dataset):
 
     os.makedirs(output_dataset, exist_ok=True)
 
-    generated_images = [
-        f for f in os.listdir(generated_objects_path)
-        if f.endswith(".png")
-    ]
+    copied = 0
 
-    original_images = [
-        f for f in os.listdir(original_dataset)
-        if f.endswith(".png") or f.endswith(".jpg")
-    ]
+    # копируем ВСЕ изображения из исходного датасета
+    for root, _, files in os.walk(original_dataset):
+        for file in files:
 
-    print(f"Найдено {len(generated_images)} сгенерированных объектов")
+            if file.lower().endswith((".png", ".jpg", ".jpeg")):
 
-    for img_name in original_images:
+                src = os.path.join(root, file)
+                dst = os.path.join(output_dataset, file)
 
-        img_path = os.path.join(original_dataset, img_name)
-        image = cv2.imread(img_path)
+                shutil.copy(src, dst)
+                copied += 1
 
-        if image is None:
-            continue
+    print(f"Скопировано оригинальных изображений: {copied}")
 
-        h, w = image.shape[:2]
+    generated = 0
 
-        # выбираем случайный объект
-        obj_name = random.choice(generated_images)
-        obj_path = os.path.join(generated_objects_path, obj_name)
+    # добавляем GAN изображения
+    for file in os.listdir(generated_objects_path):
 
-        obj = cv2.imread(obj_path)
+        if file.lower().endswith(".png"):
 
-        if obj is None:
-            continue
+            src = os.path.join(generated_objects_path, file)
+            dst = os.path.join(output_dataset, f"gan_{file}")
 
-        oh, ow = obj.shape[:2]
+            shutil.copy(src, dst)
+            generated += 1
 
-        # случайная позиция
-        x = random.randint(0, max(1, w - ow))
-        y = random.randint(0, max(1, h - oh))
-
-        # вставка
-        image[y:y+oh, x:x+ow] = obj
-
-        save_path = os.path.join(output_dataset, img_name)
-        cv2.imwrite(save_path, image)
-
-    print("Вставка объектов завершена.")
+    print(f"Добавлено GAN изображений: {generated}")

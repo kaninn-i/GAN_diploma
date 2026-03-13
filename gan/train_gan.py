@@ -71,10 +71,11 @@ def train_gan(
 
             optimizer_D.zero_grad()
 
-            noise = torch.randn(batch_size_curr, noise_dim, 1, 1, device=device)
+            # noise = torch.randn(batch_size_curr, noise_dim, 1, 1, device=device)
+            z = torch.randn(batch_size, 100, 1, 1).to(device)
 
-
-            fake_imgs = generator(noise, labels)
+            # fake_imgs = generator(noise, labels)
+            fake_imgs = generator(z)
 
             real_loss = criterion(discriminator(real_imgs, labels), real_targets)
             fake_loss = criterion(discriminator(fake_imgs.detach(), labels), fake_targets)

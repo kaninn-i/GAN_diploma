@@ -4,3 +4,6 @@ cgan_output
 gan_output
 dataset
 crops
+gan_weights
+__pycache__/
+generated_objects/

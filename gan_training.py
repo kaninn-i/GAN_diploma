@@ -1,18 +1,15 @@
 import os
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from gan_model import weights_init
 
-# from gan.generator import Generator
-# from gan.discriminator import Discriminator
 from dataset_utils import CropDataset
 
-from gan_model import Generator
-from gan_model import Discriminator
+# from gan_model import Generator, Discriminator
 
+from ssd_model import Generator, Discriminator
 
 def train_gan(
     data_path,
@@ -33,17 +30,13 @@ def train_gan(
     print(f"Найдено классов: {num_classes}")
     print(f"Всего объектов: {len(dataset)}")
 
-    # generator = Generator(noise_dim=noise_dim, num_classes=num_classes).to(device)
     generator = Generator(latent_dim=100).to(device)
-    # discriminator = Discriminator(num_classes=num_classes).to(device)
     discriminator = Discriminator().to(device)
     
     generator.apply(weights_init)
     discriminator.apply(weights_init)
 
     criterion = nn.BCELoss()
-    # optimizer_G = torch.optim.Adam(generator.parameters(), lr=0.0002, betas=(0.5, 0.999))
-    # optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=0.0001, betas=(0.5, 0.999))
     
     optimizer_G = torch.optim.Adam(generator.parameters(), lr=0.0002, betas=(0.5, 0.999))
     optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=0.0002, betas=(0.5, 0.999))

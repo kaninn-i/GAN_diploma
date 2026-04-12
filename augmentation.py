@@ -1,10 +1,7 @@
 import os
 import torch
-import random
-import cv2
 from torchvision.utils import save_image
-
-from gan_model import Generator
+import shutil
 
 
 def generate_objects(
@@ -12,10 +9,16 @@ def generate_objects(
     output_path,
     num_images,
     device="cuda",
-    batch_size=64
+    batch_size=64,
+    model_type="dcgan"
 ):
 
     os.makedirs(output_path, exist_ok=True)
+    
+    if model_type.lower() == "ssd":
+        from ssd_model import Generator
+    else:
+        from gan_model import Generator
 
     generator = Generator(latent_dim=100).to(device)
     generator.load_state_dict(torch.load(weights_path, map_location=device))
@@ -52,160 +55,60 @@ def generate_objects(
     print("Генерация завершена.")
 
 
-
-# def insert_objects(original_dataset, generated_objects_path, output_dataset):
-
-#     os.makedirs(output_dataset, exist_ok=True)
-
-#     generated_images = [
-#         f for f in os.listdir(generated_objects_path)
-#         if f.endswith(".png")
-#     ]
-
-#     original_images = [
-#         f for f in os.listdir(original_dataset)
-#         if f.endswith(".png") or f.endswith(".jpg")
-#     ]
-
-#     print(f"Найдено {len(generated_images)} сгенерированных объектов")
-
-#     for img_name in original_images:
-
-#         img_path = os.path.join(original_dataset, img_name)
-#         image = cv2.imread(img_path)
-
-#         if image is None:
-#             continue
-
-#         h, w = image.shape[:2]
-
-#         # выбираем случайный объект
-#         obj_name = random.choice(generated_images)
-#         obj_path = os.path.join(generated_objects_path, obj_name)
-
-#         obj = cv2.imread(obj_path)
-
-#         if obj is None:
-#             continue
-
-#         oh, ow = obj.shape[:2]
-
-#         # случайная позиция
-#         x = random.randint(0, max(1, w - ow))
-#         y = random.randint(0, max(1, h - oh))
-
-#         # вставка
-#         image[y:y+oh, x:x+ow] = obj
-
-#         save_path = os.path.join(output_dataset, img_name)
-#         cv2.imwrite(save_path, image)
-
-#     print("Вставка объектов завершена.")
-
-
-import os
-import random
-import cv2
-
-
-# def insert_objects(original_dataset, generated_objects_path, output_dataset):
-
-#     os.makedirs(output_dataset, exist_ok=True)
-
-#     generated_images = [
-#         f for f in os.listdir(generated_objects_path)
-#         if f.endswith(".png")
-#     ]
-
-#     # рекурсивно ищем все изображения
-#     original_images = []
-
-#     for root, _, files in os.walk(original_dataset):
-#         for file in files:
-#             if file.endswith(".png") or file.endswith(".jpg"):
-#                 original_images.append(os.path.join(root, file))
-
-#     print(f"Найдено оригинальных изображений: {len(original_images)}")
-#     print(f"Найдено сгенерированных объектов: {len(generated_images)}")
-
-#     for img_path in original_images:
-
-#         image = cv2.imread(img_path)
-
-#         if image is None:
-#             continue
-
-#         h, w = image.shape[:2]
-
-#         obj_name = random.choice(generated_images)
-#         obj_path = os.path.join(generated_objects_path, obj_name)
-
-#         obj = cv2.imread(obj_path)
-
-#         if obj is None:
-#             continue
-
-#         oh, ow = obj.shape[:2]
-
-#         x = random.randint(0, max(1, w - ow))
-#         y = random.randint(0, max(1, h - oh))
-
-#         # проверяем границы
-#         y2 = min(y + oh, h)
-#         x2 = min(x + ow, w)
-
-#         # корректируем размеры объекта
-#         obj_crop = obj[:y2 - y, :x2 - x]
-
-#         image[y:y2, x:x2] = obj_crop
-
-#         save_name = os.path.basename(img_path)
-
-#         save_path = os.path.join(output_dataset, save_name)
-
-#         cv2.imwrite(save_path, image)
-
-#     print("Вставка объектов завершена.")
-
-import os
-import shutil
-
-
-import os
-import shutil
-
-
 def merge_datasets(original_dataset, generated_objects_path, output_dataset):
 
-    os.makedirs(output_dataset, exist_ok=True)
+    images_out = os.path.join(output_dataset, "images")
+    labels_out = os.path.join(output_dataset, "labels")
 
-    copied = 0
+    os.makedirs(images_out, exist_ok=True)
+    os.makedirs(labels_out, exist_ok=True)
 
-    # копируем ВСЕ изображения из исходного датасета
+    # -------------------------
+    # копируем оригинальный dataset
+    # -------------------------
+
     for root, _, files in os.walk(original_dataset):
+
         for file in files:
+
+            src = os.path.join(root, file)
 
             if file.lower().endswith((".png", ".jpg", ".jpeg")):
 
-                src = os.path.join(root, file)
-                dst = os.path.join(output_dataset, file)
+                shutil.copy(src, os.path.join(images_out, file))
 
-                shutil.copy(src, dst)
-                copied += 1
+            if file.lower().endswith(".txt"):
 
-    print(f"Скопировано оригинальных изображений: {copied}")
+                shutil.copy(src, os.path.join(labels_out, file))
 
-    generated = 0
+    print("Оригинальный датасет скопирован")
 
+    # -------------------------
     # добавляем GAN изображения
-    for file in os.listdir(generated_objects_path):
+    # -------------------------
 
-        if file.lower().endswith(".png"):
+    class_id = 0
 
-            src = os.path.join(generated_objects_path, file)
-            dst = os.path.join(output_dataset, f"gan_{file}")
+    for i, file in enumerate(os.listdir(generated_objects_path)):
 
-            shutil.copy(src, dst)
-            generated += 1
+        if not file.endswith(".png"):
+            continue
 
-    print(f"Добавлено GAN изображений: {generated}")
+        src = os.path.join(generated_objects_path, file)
+
+        new_name = f"gan_{i}.png"
+
+        dst = os.path.join(images_out, new_name)
+
+        shutil.copy(src, dst)
+
+        # создаем YOLO label
+        label_path = os.path.join(
+            labels_out,
+            new_name.replace(".png", ".txt")
+        )
+
+        with open(label_path, "w") as f:
+            f.write(f"{class_id} 0.5 0.5 1.0 1.0\n")
+
+    print("GAN изображения добавлены")

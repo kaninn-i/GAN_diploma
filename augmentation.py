@@ -1,8 +1,14 @@
 import os
 import torch
-from torchvision.utils import save_image
 import shutil
+from pathlib import Path
+from torchvision.utils import save_image
 
+
+
+# ===============================
+# Генерация объектов GAN
+# ===============================
 
 def generate_objects(
     weights_path,
@@ -14,7 +20,8 @@ def generate_objects(
 ):
 
     os.makedirs(output_path, exist_ok=True)
-    
+
+    # выбор модели
     if model_type.lower() == "ssd":
         from ssd_model import Generator
     else:
@@ -24,22 +31,19 @@ def generate_objects(
     generator.load_state_dict(torch.load(weights_path, map_location=device))
     generator.eval()
 
-    total_images = num_images
     generated = 0
     img_id = 0
 
-    print(f"Генерируем {total_images} изображений...")
+    while generated < num_images:
 
-    while generated < total_images:
-
-        current_batch = min(batch_size, total_images - generated)
+        current_batch = min(batch_size, num_images - generated)
 
         z = torch.randn(current_batch, 100, 1, 1, device=device)
 
         with torch.no_grad():
             fake = generator(z)
 
-        fake = (fake + 1) / 2  # [-1,1] → [0,1]
+        fake = (fake + 1) / 2
 
         for i in range(current_batch):
 
@@ -52,20 +56,24 @@ def generate_objects(
 
         generated += current_batch
 
-    print("Генерация завершена.")
+    return img_id
 
 
-def merge_datasets(original_dataset, generated_objects_path, output_dataset):
+# ===============================
+# Копирование оригинального dataset
+# ===============================
 
-    images_out = os.path.join(output_dataset, "images")
-    labels_out = os.path.join(output_dataset, "labels")
+def copy_original_dataset(original_dataset, output_dataset):
 
-    os.makedirs(images_out, exist_ok=True)
-    os.makedirs(labels_out, exist_ok=True)
+    images_dst = os.path.join(output_dataset, "images")
+    labels_dst = os.path.join(output_dataset, "labels")
 
-    # -------------------------
-    # копируем оригинальный dataset
-    # -------------------------
+    os.makedirs(images_dst, exist_ok=True)
+    os.makedirs(labels_dst, exist_ok=True)
+
+    image_ext = (".jpg", ".jpeg", ".png")
+
+    img_id = 0
 
     for root, _, files in os.walk(original_dataset):
 
@@ -73,42 +81,99 @@ def merge_datasets(original_dataset, generated_objects_path, output_dataset):
 
             src = os.path.join(root, file)
 
-            if file.lower().endswith((".png", ".jpg", ".jpeg")):
+            # копируем изображения
+            if file.lower().endswith(image_ext):
 
-                shutil.copy(src, os.path.join(images_out, file))
+                new_name = f"orig_{img_id}{Path(file).suffix}"
 
-            if file.lower().endswith(".txt"):
+                shutil.copy(
+                    src,
+                    os.path.join(images_dst, new_name)
+                )
 
-                shutil.copy(src, os.path.join(labels_out, file))
+                # ищем label рядом
+                label_src = os.path.splitext(src)[0] + ".txt"
 
-    print("Оригинальный датасет скопирован")
+                if os.path.exists(label_src):
 
-    # -------------------------
-    # добавляем GAN изображения
-    # -------------------------
+                    shutil.copy(
+                        label_src,
+                        os.path.join(
+                            labels_dst,
+                            new_name.replace(Path(file).suffix, ".txt")
+                        )
+                    )
 
-    class_id = 0
+                img_id += 1
 
-    for i, file in enumerate(os.listdir(generated_objects_path)):
 
-        if not file.endswith(".png"):
+# ===============================
+# merge datasets (мультикласс)
+# ===============================
+
+def merge_datasets(
+    original_dataset,
+    generated_objects_path,
+    output_dataset
+):
+    
+    if not os.path.exists(generated_objects_path):
+        print("Нет сгенерированных изображений — копируем только оригинальный датасет")
+        copy_original_dataset(original_dataset, output_dataset)
+        return []
+
+    copy_original_dataset(original_dataset, output_dataset)
+
+    images_out = os.path.join(output_dataset, "images")
+    labels_out = os.path.join(output_dataset, "labels")
+
+    img_id = 0
+    metrics = []
+
+    # структура:
+    # generated/
+    #   class_0/
+    #   class_1/
+
+    for class_dir in sorted(os.listdir(generated_objects_path)):
+
+        class_path = os.path.join(generated_objects_path, class_dir)
+
+        if not os.path.isdir(class_path):
             continue
 
-        src = os.path.join(generated_objects_path, file)
+        # class_0 -> 0
+        class_id = int(class_dir.split("_")[1])
 
-        new_name = f"gan_{i}.png"
+        class_count = 0
 
-        dst = os.path.join(images_out, new_name)
+        for file in os.listdir(class_path):
 
-        shutil.copy(src, dst)
+            if not file.endswith(".png"):
+                continue
 
-        # создаем YOLO label
-        label_path = os.path.join(
-            labels_out,
-            new_name.replace(".png", ".txt")
-        )
+            src = os.path.join(class_path, file)
 
-        with open(label_path, "w") as f:
-            f.write(f"{class_id} 0.5 0.5 1.0 1.0\n")
+            new_name = f"gan_{class_id}_{img_id}.png"
+            dst = os.path.join(images_out, new_name)
 
-    print("GAN изображения добавлены")
+            shutil.copy(src, dst)
+
+            # создаем YOLO label
+            label_path = os.path.join(
+                labels_out,
+                new_name.replace(".png", ".txt")
+            )
+
+            with open(label_path, "w") as f:
+                f.write(f"{class_id} 0.5 0.5 1.0 1.0\n")
+
+            img_id += 1
+            class_count += 1
+
+        metrics.append({
+            "class": class_id,
+            "generated": class_count
+        })
+
+    return metrics

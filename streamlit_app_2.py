@@ -18,19 +18,16 @@ st.set_page_config(
 # ----- Пользовательские стили (опционально) -----
 st.markdown("""
 <style>
-    /* Уменьшаем отступы для компактности */
     .block-container {
         padding-top: 2rem;
         padding-bottom: 1rem;
     }
-    /* Делаем кнопку пошире */
     .stButton button {
         width: 100%;
         font-weight: bold;
         background-color: #4CAF50;
         color: white;
     }
-    /* Выделяем предупреждения */
     .stAlert {
         border-radius: 8px;
     }
@@ -40,8 +37,8 @@ st.markdown("""
 # ----- Заголовок и описание -----
 st.title("🎨 GAN Dataset Augmentation")
 st.markdown("""
-Загрузите ZIP‑архив с набором данных, разбитым по папкам классов.  
-Приложение проанализирует дисбаланс и сгенерирует дополнительные изображения с помощью **GAN**.
+Загрузите ZIP‑архив с набором данных, который вы хотите расширить с помощью аугментации.  
+Приложение проанализирует его на дисбаланс и сгенерирует дополнительные изображения с помощью нейронной сети **GAN**.
 """)
 
 # ----- Боковая панель с управлением -----
@@ -186,6 +183,23 @@ if uploaded_zip:
                 st.caption(f"Всего синтезировано изображений: **{total_generated}**")
             else:
                 st.info("Метрики не были возвращены.")
+                
+            # --- Графики ---
+            st.subheader("📈 Графики обучения GAN")
+
+            for row in result["metrics"]:
+
+                if "g_loss" not in row:
+                    continue
+
+                st.write(f"### Class {row['class']}")
+
+                chart_data = {
+                    "Generator": row["g_loss"],
+                    "Discriminator": row["d_loss"]
+                }
+
+                st.line_chart(chart_data)
 
             # ----- Предпросмотр сгенерированных изображений -----
             st.header("🖼️ Примеры сгенерированных изображений")

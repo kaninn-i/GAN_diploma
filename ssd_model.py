@@ -101,7 +101,7 @@ class Generator(nn.Module):
         idx = 0
         while current_size < img_size:
             out_ch = out_chs[idx] if idx < len(out_chs) else 16
-            upsample = (current_size != 4)
+            upsample = True
             blocks.append(StyleBlock(in_ch, out_ch, style_dim, upsample=upsample))
             in_ch = out_ch
             current_size *= 2
@@ -147,7 +147,7 @@ class Discriminator(nn.Module):
                 nn.LeakyReLU(0.2, inplace=True),
                 nn.Dropout(0.3),
             ])
-        # Последний слой БЕЗ Sigmoid
+        
         layers.append(spectral_norm(nn.Conv2d(512, 1, 4, 1, 0, bias=False)))
         self.model = nn.Sequential(*layers)
 

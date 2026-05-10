@@ -89,7 +89,7 @@ def load_checkpoint(path, generator, discriminator, opt_G, opt_D, sched_G, sched
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data', type=str, default='coco_objects_128/train')
+    parser.add_argument('--data', type=str, default='coco_data/coco_2017/train2017')
     parser.add_argument('--resume', type=str, default=None, help='Путь к checkpoint для возобновления')
     args = parser.parse_args()
 

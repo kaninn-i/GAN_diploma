@@ -47,7 +47,6 @@ class CropImageDataset(torch.utils.data.Dataset):
 
 
 def diff_augment(x, policy='', p=0.5):
-    # ... без изменений (как раньше)
     if not policy:
         return x
     if 'color' in policy and torch.rand(1) < p:
@@ -75,8 +74,10 @@ def train_gan(class_dir, save_dir, epochs=200, batch_size=64, latent_dim=128,
     
     os.makedirs(save_dir, exist_ok=True)
     dataset = CropImageDataset(class_dir, img_size=img_size, augment=True)
-    if len(dataset) < 5:
-        print(f"[WARN] {class_dir} has less than 5 images, skipping training.")
+    batch_size = min(batch_size, len(dataset))
+    
+    if len(dataset) < 25:
+        print(f"[WARN] {class_dir} has less than 25 images, skipping training.")
         return None
 
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,

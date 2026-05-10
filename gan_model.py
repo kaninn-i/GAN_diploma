@@ -3,7 +3,7 @@ import torch.nn as nn
 
 
 class Generator(nn.Module):
-    def __init__(self, latent_dim=100, img_channels=3):
+    def __init__(self, latent_dim=128, img_channels=3):
         super().__init__()
         self.main = nn.Sequential(
             nn.ConvTranspose2d(latent_dim, 512, 4, 1, 0, bias=False),
@@ -42,7 +42,6 @@ class Discriminator(nn.Module):
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(512, 1, 4, 1, 0, bias=False),
-            nn.Sigmoid()
         )
 
     def forward(self, img):

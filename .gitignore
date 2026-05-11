@@ -10,3 +10,6 @@ generated_objects/
 dataset_augmented/
 coco_data
 *.zip
+runs
+*.pt
+*.docx

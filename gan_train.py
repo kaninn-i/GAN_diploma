@@ -20,19 +20,21 @@ class CropImageDataset(torch.utils.data.Dataset):
                 self.samples.append(os.path.join(class_dir, f))
         self.img_size = img_size
         self.augment = augment
-        self.basic_transform = transforms.Compose([
+        # Шаг 1: PIL + resize (результат — PIL Image)
+        self.resize_transform = transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize((img_size, img_size)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5]*3, [0.5]*3)
         ])
-        if augment:
-            self.aug_transform = transforms.Compose([
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15, hue=0.05),
-            ])
-        else:
-            self.aug_transform = None
+        # Шаг 2: аугментации на PIL Image — ColorJitter работает корректно только до нормализации
+        self.aug_transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15, hue=0.05),
+        ]) if augment else None
+        # Шаг 3: перевод в тензор и нормализация в [-1, 1]
+        self.to_tensor = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize([0.5] * 3, [0.5] * 3)
+        ])
 
     def __len__(self):
         return len(self.samples)
@@ -40,9 +42,10 @@ class CropImageDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         img = cv2.imread(self.samples[idx])
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = self.basic_transform(img)
+        img = self.resize_transform(img)
         if self.aug_transform:
             img = self.aug_transform(img)
+        img = self.to_tensor(img)
         return img, 0
 
 
@@ -66,12 +69,26 @@ def diff_augment(x, policy='', p=0.5):
     return x
 
 
-def train_gan(class_dir, save_dir, epochs=200, batch_size=64, latent_dim=128,
-              lr_G=0.0002, lr_D=0.0004, device="cuda", model_type="ssd",
-              img_size=64, use_ema=True, ema_decay=0.999,
-              augment_policy='color,translation,cutout',
-              pretrained_generator_path=None):
+def train_gan(
+    class_dir,
+    save_dir,
+    epochs=200,
+    batch_size=64,
+    latent_dim=128,
+    lr_G=0.0002,
+    lr_D=0.0004,
+    device="cuda",
+    model_type="ssd",
+    img_size=64,
+    use_ema=True,
+    ema_decay=0.999,
+    augment_policy='color,translation,cutout',
+    pretrained_generator_path=None,
+    progress_callback=None):
     
+    if model_type.lower() == "dcgan" and img_size != 64:
+        img_size = 64
+
     os.makedirs(save_dir, exist_ok=True)
     dataset = CropImageDataset(class_dir, img_size=img_size, augment=True)
     batch_size = min(batch_size, len(dataset))
@@ -167,13 +184,26 @@ def train_gan(class_dir, save_dir, epochs=200, batch_size=64, latent_dim=128,
         avg_d = epoch_d_loss / len(dataloader)
         avg_g = epoch_g_loss / len(dataloader)
         print(f"Epoch {epoch+1}/{epochs} | D loss: {avg_d:.4f} | G loss: {avg_g:.4f}")
+        
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            viz_gen = ema_generator if use_ema and ema_generator is not None else generator
 
-        if (epoch+1) % 10 == 0 or epoch == 0:
-            viz_gen = ema_generator if use_ema else generator
             with torch.no_grad():
                 samples = viz_gen(fixed_noise)
                 samples = (samples + 1) / 2
-                save_image(samples, os.path.join(save_dir, f"epoch_{epoch+1}.png"), nrow=4)
+
+            preview_path = os.path.join(save_dir, f"epoch_{epoch + 1}.png")
+            save_image(samples, preview_path, nrow=4)
+
+        else:
+            preview_path = None
+
+        if progress_callback:
+            progress_value = float((epoch + 1) / epochs)
+            progress_callback(
+                progress_value,
+                f"Обучение эпоха {epoch + 1}/{epochs} | G: {avg_g:.4f} | D: {avg_d:.4f}"
+            )
 
         torch.save(generator.state_dict(), os.path.join(save_dir, "generator.pth"))
         torch.save(discriminator.state_dict(), os.path.join(save_dir, "discriminator.pth"))

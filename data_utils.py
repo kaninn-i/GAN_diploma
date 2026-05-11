@@ -126,3 +126,49 @@ def load_dataset_images(image_objects):
             h, w = img.shape[:2]
             image_info[img_path] = (h, w)
     return image_info
+
+
+def validate_dataset(image_objects):
+    """
+    Проверка качества датасета.
+
+    Возвращает:
+        warnings: list[str]
+    """
+    warnings = []
+
+    for img_path, (objects, _) in image_objects.items():
+
+        img = cv2.imread(img_path)
+
+        if img is None:
+            warnings.append(
+                f"Битое изображение: {Path(img_path).name}"
+            )
+            continue
+
+        img_h, img_w = img.shape[:2]
+
+        if len(objects) == 0:
+            warnings.append(
+                f"Нет объектов: {Path(img_path).name}"
+            )
+
+        for i, (cls_id, x1, y1, x2, y2) in enumerate(objects):
+
+            if x1 < 0 or y1 < 0:
+                warnings.append(
+                    f"{Path(img_path).name}: bbox #{i} имеет отрицательные координаты"
+                )
+
+            if x2 > img_w or y2 > img_h:
+                warnings.append(
+                    f"{Path(img_path).name}: bbox #{i} выходит за границы изображения"
+                )
+
+            if x2 <= x1 or y2 <= y1:
+                warnings.append(
+                    f"{Path(img_path).name}: bbox #{i} имеет некорректный размер"
+                )
+
+    return warnings

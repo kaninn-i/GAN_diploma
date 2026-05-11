@@ -2,14 +2,21 @@ import os
 import torch
 from torchvision.utils import save_image
 from ssd_model import Generator as SSDGenerator
+from ssd_lite_model import Generator as SSDLiteGenerator
 from gan_model import Generator as DCGANGenerator
+from dcgan_sn_model import Generator as DCGANSNGenerator
 
 
 def generate_objects(generator_path, output_dir, num_images, latent_dim=128,
                      device="cuda", batch_size=64, model_type="dcgan", img_size=64,
                      ema_weights_path=None):
-    if model_type.lower() == "ssd":
+    mt = model_type.lower()
+    if mt == "ssd":
         generator = SSDGenerator(latent_dim, img_size=img_size).to(device)
+    elif mt == "ssd_lite":
+        generator = SSDLiteGenerator(latent_dim, img_size=img_size).to(device)
+    elif mt == "dcgan_sn":
+        generator = DCGANSNGenerator(latent_dim).to(device)
     else:
         generator = DCGANGenerator(latent_dim).to(device)
 

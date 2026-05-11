@@ -12,9 +12,51 @@ from data_utils import analyze_dataset, extract_crops_with_padding, load_dataset
 from gan_train import train_gan
 from object_generator import generate_objects
 from image_integrator import insert_object, match_object_to_background
+from background_clean import remove_labeled_instances_bgr
+from gan_metrics import compute_fid_folders
+from experiment_utils import create_experiment, save_experiment_config, save_metrics
 
 
-def split_and_copy(file_pairs, output_root, splits):
+def _label_to_yolo_txt(label_path, img_path, image_objects):
+    """
+    Возвращает строки YOLO-формата для заданного label_path.
+    - Если label_path уже .txt — читаем как есть (уже YOLO).
+    - Если .xml — берём уже разобранные объекты из image_objects и
+      конвертируем пиксельные координаты в нормализованные.
+    """
+    ext = Path(label_path).suffix.lower()
+
+    if ext == ".txt":
+        with open(label_path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    # XML — конвертируем из image_objects (уже распарсено в analyze_dataset)
+    if img_path in image_objects:
+        objs, _ = image_objects[img_path]
+        img = cv2.imread(img_path)
+        if img is None:
+            return ""
+        h, w = img.shape[:2]
+        lines = []
+        for cls, x1, y1, x2, y2 in objs:
+            xc = ((x1 + x2) / 2) / w
+            yc = ((y1 + y2) / 2) / h
+            bw = (x2 - x1) / w
+            bh = (y2 - y1) / h
+            lines.append(f"{cls} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}")
+        return "\n".join(lines)
+
+    return ""
+
+
+def _write_label(dst_path, label_path, img_path, image_objects):
+    """Записывает аннотацию в YOLO .txt формате."""
+    content = _label_to_yolo_txt(label_path, img_path, image_objects)
+    with open(dst_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def split_and_copy(file_pairs, output_root, splits, image_objects=None):
     random.shuffle(file_pairs)
 
     total = len(file_pairs)
@@ -39,7 +81,12 @@ def split_and_copy(file_pairs, output_root, splits):
             ext = Path(img_path).suffix
 
             shutil.copy2(img_path, os.path.join(img_dir, f"{base}{ext}"))
-            shutil.copy2(label_path, os.path.join(lbl_dir, f"{base}.txt"))
+
+            dst_lbl = os.path.join(lbl_dir, f"{base}.txt")
+            if image_objects is not None:
+                _write_label(dst_lbl, label_path, img_path, image_objects)
+            else:
+                shutil.copy2(label_path, dst_lbl)
 
 
 def build_generation_plan(class_counts, balance_to_max=True, override_plan=None):
@@ -62,6 +109,17 @@ def notify_stage(callback, stage_name, stage_num, stage_total):
         callback(stage_name, stage_num, stage_total)
 
 
+def _build_class_names(class_counts, class_name_to_id):
+    """
+    Возвращает список имён классов, упорядоченных по ID.
+    Для XML-датасетов использует реальные имена; для YOLO — "class_N".
+    """
+    if class_name_to_id:
+        id_to_name = {v: k for k, v in class_name_to_id.items()}
+        return [id_to_name.get(cls, f"class_{cls}") for cls in sorted(class_counts.keys())]
+    return [f"class_{cls}" for cls in sorted(class_counts.keys())]
+
+
 def run_full_pipeline(
     dataset_dir,
     output_dir,
@@ -71,6 +129,9 @@ def run_full_pipeline(
     max_objects_per_image=3,
     model_device="cuda",
     padding_ratio=0.1,
+    crop_jitter_variants=3,
+    crop_jitter_frac=0.15,
+    crop_seed=42,
     split_config=None,
     model_type="dcgan",
     img_size=64,
@@ -78,7 +139,13 @@ def run_full_pipeline(
     progress_callback=None,
     stage_callback=None,
     run_yolo_validation=False,
-    yolo_epochs=15
+    yolo_epochs=15,
+    compute_fid=True,
+    gan_train_kwargs=None,
+    log_experiment=False,
+    use_clean_background=True,
+    inpaint_dilate=2,
+    inpaint_radius=3,
 ):
 
     os.makedirs(output_dir, exist_ok=True)
@@ -87,6 +154,9 @@ def run_full_pipeline(
     os.makedirs(tmp_root, exist_ok=True)
 
     stage_timings = {}
+    gan_train_kwargs = gan_train_kwargs or {}
+    fid_by_class = {}
+    gan_metrics_by_class = {}
 
     # ======================= Этап 1: Анализ датасета + извлечение кропов ==============================
 
@@ -94,7 +164,7 @@ def run_full_pipeline(
 
     stage_start = time.time()
 
-    class_counts, image_objects = analyze_dataset(dataset_dir)
+    class_counts, image_objects, class_name_to_id = analyze_dataset(dataset_dir)
 
     if not class_counts:
         raise ValueError("No valid objects found.")
@@ -105,7 +175,10 @@ def run_full_pipeline(
         image_objects=image_objects,
         output_dir=crops_dir,
         padding_ratio=padding_ratio,
-        crop_size=img_size
+        crop_size=img_size,
+        jitter_variants=crop_jitter_variants,
+        jitter_frac=crop_jitter_frac,
+        seed=crop_seed,
     )
 
     stage_timings["crop_extraction"] = time.time() - stage_start
@@ -150,11 +223,13 @@ def run_full_pipeline(
                 model_type=model_type,
                 img_size=img_size,
                 use_ema=True,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                **gan_train_kwargs,
             )
 
             if metrics is not None:
                 trained_classes.append(cls)
+                gan_metrics_by_class[int(cls)] = metrics
 
         except Exception as e:
             print(f"[TRAIN ERROR] class {cls}: {e}")
@@ -201,6 +276,18 @@ def run_full_pipeline(
             print(f"[GEN ERROR] class {cls}: {e}")
             continue
 
+        if compute_fid:
+            crop_dir_cls = os.path.join(crops_dir, f"class_{cls}")
+            if os.path.isdir(crop_dir_cls) and os.path.isdir(class_output_dir):
+                fid_val = compute_fid_folders(
+                    crop_dir_cls,
+                    class_output_dir,
+                    device=model_device,
+                )
+                if fid_val is not None:
+                    fid_by_class[int(cls)] = fid_val
+                    print(f"[FID] class_{cls}: {fid_val:.2f}")
+
         for file_name in os.listdir(class_output_dir):
             if file_name.endswith(".png"):
                 synthetic_objects.append(
@@ -224,10 +311,11 @@ def run_full_pipeline(
 
     random.shuffle(synthetic_objects)
 
-    final_pairs = []
-
-    for img_path, (_, label_path) in image_objects.items():
-        final_pairs.append((img_path, label_path))
+    # Оригинальные пары — будут сконвертированы при экспорте
+    original_pairs = [
+        (img_path, label_path)
+        for img_path, (_, label_path) in image_objects.items()
+    ]
 
     temp_generated = []
 
@@ -245,7 +333,16 @@ def run_full_pipeline(
         if bg_img is None:
             continue
 
-        result_img = bg_img.copy()
+        if use_clean_background and bg_path in image_objects:
+            objs_on_bg, _ = image_objects[bg_path]
+            result_img = remove_labeled_instances_bgr(
+                bg_img,
+                objs_on_bg,
+                dilate=int(inpaint_dilate),
+                inpaint_radius=int(inpaint_radius),
+            )
+        else:
+            result_img = bg_img.copy()
         annotations = []
 
         inserts_count = min(
@@ -264,7 +361,7 @@ def run_full_pipeline(
                 continue
 
             try:
-                adapted = match_object_to_background(synth_img, bg_img)
+                adapted = match_object_to_background(synth_img, result_img)
 
                 result_img, bbox = insert_object(
                     background=result_img,
@@ -288,23 +385,24 @@ def run_full_pipeline(
         img_name = f"aug_{image_idx:06d}.jpg"
         lbl_name = f"aug_{image_idx:06d}.txt"
 
-        img_path = os.path.join(tmp_root, "new_images", img_name)
-        lbl_path = os.path.join(tmp_root, "new_images", lbl_name)
+        aug_img_path = os.path.join(tmp_root, "new_images", img_name)
+        aug_lbl_path = os.path.join(tmp_root, "new_images", lbl_name)
 
-        os.makedirs(os.path.dirname(img_path), exist_ok=True)
+        os.makedirs(os.path.dirname(aug_img_path), exist_ok=True)
 
-        cv2.imwrite(img_path, result_img)
+        cv2.imwrite(aug_img_path, result_img)
 
-        with open(lbl_path, "w") as f:
+        with open(aug_lbl_path, "w") as f:
             f.write("\n".join(annotations))
 
-        temp_generated.append((img_path, lbl_path))
+        temp_generated.append((aug_img_path, aug_lbl_path))
 
         image_idx += 1
 
     pbar.close()
 
-    final_pairs.extend(temp_generated)
+    # Все пары для экспорта: оригинальные + сгенерированные
+    final_pairs = original_pairs + temp_generated
 
     stage_timings["integration"] = time.time() - stage_start
 
@@ -325,7 +423,7 @@ def run_full_pipeline(
                 for k, v in split_config.items()
             }
 
-        split_and_copy(final_pairs, output_dir, split_config)
+        split_and_copy(final_pairs, output_dir, split_config, image_objects=image_objects)
 
     else:
 
@@ -336,25 +434,19 @@ def run_full_pipeline(
         os.makedirs(lbl_dir, exist_ok=True)
 
         for img_path, label_path in final_pairs:
-
             base = Path(img_path).stem
             ext = Path(img_path).suffix
 
-            shutil.copy2(
-                img_path,
-                os.path.join(img_dir, f"{base}{ext}")
-            )
+            shutil.copy2(img_path, os.path.join(img_dir, f"{base}{ext}"))
 
-            shutil.copy2(
-                label_path,
-                os.path.join(lbl_dir, f"{base}.txt")
-            )
+            dst_lbl = os.path.join(lbl_dir, f"{base}.txt")
+            _write_label(dst_lbl, label_path, img_path, image_objects)
 
     stage_timings["export"] = time.time() - stage_start
 
     print(f"Augmented dataset saved to {output_dir}")
 
-# =================== Этап 6: валидация с помощью YOLOv8 ==================
+    # =================== Этап 6: валидация с помощью YOLOv8 ==================
 
     yolo_results = None
 
@@ -365,8 +457,7 @@ def run_full_pipeline(
         stage_start = time.time()
 
         try:
-
-            class_names = [f"class_{cls}" for cls in sorted(class_counts.keys())]
+            class_names = _build_class_names(class_counts, class_name_to_id)
 
             original_yolo_dir = os.path.join(tmp_root, "yolo_original")
             augmented_yolo_dir = os.path.join(tmp_root, "yolo_augmented")
@@ -377,7 +468,8 @@ def run_full_pipeline(
                 dataset_dir=dataset_dir,
                 output_dir=original_yolo_dir,
                 class_names=class_names,
-                epochs=yolo_epochs
+                epochs=yolo_epochs,
+                image_objects=image_objects,
             )
 
             print("Running augmented YOLO validation...")
@@ -386,7 +478,8 @@ def run_full_pipeline(
                 dataset_dir=output_dir,
                 output_dir=augmented_yolo_dir,
                 class_names=class_names,
-                epochs=yolo_epochs
+                epochs=yolo_epochs,
+                image_objects=image_objects,
             )
 
             yolo_results = {
@@ -406,7 +499,38 @@ def run_full_pipeline(
 
         stage_timings["yolo_validation"] = time.time() - stage_start
 
+    if log_experiment:
+        exp_dir = create_experiment()
+        save_experiment_config(
+            exp_dir,
+            {
+                "dataset_dir": dataset_dir,
+                "output_dir": output_dir,
+                "model_type": model_type,
+                "epochs": epochs,
+                "img_size": img_size,
+                "crop_jitter_variants": crop_jitter_variants,
+                "crop_jitter_frac": crop_jitter_frac,
+                "gan_train_kwargs": gan_train_kwargs,
+                "compute_fid": compute_fid,
+                "run_yolo_validation": run_yolo_validation,
+                "class_name_to_id": class_name_to_id,
+            },
+        )
+        save_metrics(
+            exp_dir,
+            {
+                "timings": stage_timings,
+                "gan_fid": fid_by_class,
+                "gan_metrics": gan_metrics_by_class,
+                "yolo": yolo_results,
+            },
+        )
+
     return {
         "timings": stage_timings,
-        "yolo": yolo_results
+        "yolo": yolo_results,
+        "gan_fid": fid_by_class if fid_by_class else None,
+        "gan_metrics": gan_metrics_by_class if gan_metrics_by_class else None,
+        "class_name_to_id": class_name_to_id,
     }

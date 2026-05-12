@@ -112,6 +112,18 @@ def _r1_penalty(real_img, discriminator):
     return grad.pow(2).reshape(grad.shape[0], -1).sum(1).mean()
 
 
+def _actual_generator_output_size(img_size: int) -> int:
+    """
+    Возвращает фактический размер выхода генератора SSD/SSD-lite.
+    Генератор удваивает от 4 до тех пор, пока размер < img_size,
+    поэтому реальный выход — ближайшая степень 2, >= img_size.
+    """
+    s = 4
+    while s < img_size:
+        s *= 2
+    return s
+
+
 def train_gan(
     class_dir,
     save_dir,
@@ -135,8 +147,15 @@ def train_gan(
     save_best=True,
 ):
     mt = model_type.lower()
-    if mt in ("dcgan", "dcgan_sn") and img_size != 64:
+
+    # DCGAN зафиксирован на 64
+    if mt in ("dcgan", "dcgan_sn"):
         img_size = 64
+
+    # Для SSD-моделей приводим img_size к ближайшей степени 2
+    # чтобы размер датасета совпадал с выходом генератора
+    if mt in ("ssd", "ssd_lite"):
+        img_size = _actual_generator_output_size(img_size)
 
     os.makedirs(save_dir, exist_ok=True)
     dataset = CropImageDataset(class_dir, img_size=img_size, augment=True)
@@ -147,6 +166,12 @@ def train_gan(
         augment_policy, augment_policy_p = _diff_augment_policy_for_n(n_samples)
     if augment_policy_p is None:
         _, augment_policy_p = _diff_augment_policy_for_n(n_samples)
+
+    # Смягчаем R1 для малых датасетов, чтобы не убивать градиенты
+    if n_samples < 100 and r1_gamma > 5.0:
+        r1_gamma = 5.0
+    if n_samples < 50 and r1_gamma > 1.0:
+        r1_gamma = 1.0
 
     if n_samples < 25:
         print(f"[WARN] {class_dir} has less than 25 images, skipping training.")
@@ -220,6 +245,9 @@ def train_gan(
     best_g = float("inf")
     best_epoch = -1
 
+    # ── история лоссов по эпохам ──
+    epoch_history: list[dict] = []
+
     for epoch in range(epochs):
         epoch_d_loss = 0.0
         epoch_g_loss = 0.0
@@ -278,6 +306,11 @@ def train_gan(
         avg_g = epoch_g_loss / denom_g
         print(f"Epoch {epoch+1}/{epochs} | D loss: {avg_d:.4f} | G loss: {avg_g:.4f}")
 
+        # ── фиксируем историю ──
+        epoch_history.append(
+            {"epoch": epoch + 1, "g_loss": round(avg_g, 5), "d_loss": round(avg_d, 5)}
+        )
+
         if save_best and avg_g < best_g - 1e-6:
             best_g = avg_g
             best_epoch = epoch + 1
@@ -300,8 +333,6 @@ def train_gan(
                 samples = (samples + 1) / 2
             preview_path = os.path.join(save_dir, f"epoch_{epoch + 1}.png")
             save_image(samples, preview_path, nrow=4)
-        else:
-            preview_path = None
 
         if progress_callback:
             progress_value = float((epoch + 1) / epochs)
@@ -316,12 +347,13 @@ def train_gan(
             torch.save(ema_generator.state_dict(), os.path.join(save_dir, "generator_ema.pth"))
 
     if save_best and best_epoch > 0:
-        best_g_path = os.path.join(save_dir, "generator_best.pth")
-        if os.path.isfile(best_g_path):
-            shutil.copy2(best_g_path, os.path.join(save_dir, "generator.pth"))
-        best_d_path = os.path.join(save_dir, "discriminator_best.pth")
-        if os.path.isfile(best_d_path):
-            shutil.copy2(best_d_path, os.path.join(save_dir, "discriminator.pth"))
+        for src, dst in [
+            ("generator_best.pth", "generator.pth"),
+            ("discriminator_best.pth", "discriminator.pth"),
+        ]:
+            src_path = os.path.join(save_dir, src)
+            if os.path.isfile(src_path):
+                shutil.copy2(src_path, os.path.join(save_dir, dst))
         best_ema = os.path.join(save_dir, "generator_ema_best.pth")
         if use_ema and os.path.isfile(best_ema):
             shutil.copy2(best_ema, os.path.join(save_dir, "generator_ema.pth"))
@@ -331,4 +363,6 @@ def train_gan(
         "d_loss": avg_d,
         "best_g_loss": best_g,
         "best_epoch": best_epoch,
+        "epoch_history": epoch_history,   # ← новое поле
+        "img_size_used": img_size,         # ← для диагностики
     }

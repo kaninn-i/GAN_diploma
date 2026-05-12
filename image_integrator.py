@@ -1,9 +1,9 @@
 """
 Интеграция объектов в фоновые изображения.
 
-Основной метод — Пуассоново смешивание (cv2.seamlessClone / MIXED_CLONE),
-которое убирает «вырезанный» вид объекта.
-При ошибках или граничных случаях — фолбэк на простое копирование с маской.
+Метод: локальная цветовая адаптация к патчу фона в точке вставки +
+       мягкая эллиптическая alpha-маска с cosine-спадом (feather).
+       Без Пуассонова смешивания — нет артефактов «мазни».
 """
 
 import cv2
@@ -12,48 +12,72 @@ import random
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Вспомогательные функции
+# Цветовая адаптация
 # ─────────────────────────────────────────────────────────────────────────────
 
-def adjust_brightness_contrast(obj_bgr, target_mean, target_std):
-    """Адаптирует яркость/контраст объекта под статистику фона."""
+def _local_patch_stats(
+    background: np.ndarray, cx: int, cy: int, radius: int = 40
+) -> tuple[np.ndarray, np.ndarray]:
+    """Среднее и стд. отклонение локального патча фона вокруг точки (cx, cy)."""
+    h, w = background.shape[:2]
+    x1, x2 = max(0, cx - radius), min(w, cx + radius)
+    y1, y2 = max(0, cy - radius), min(h, cy + radius)
+    patch = background[y1:y2, x1:x2]
+    if patch.size < 9:
+        patch = background
+    mean, std = cv2.meanStdDev(patch)
+    return np.array(mean).flatten(), np.array(std).flatten()
+
+
+def adjust_brightness_contrast(
+    obj_bgr: np.ndarray,
+    target_mean: np.ndarray,
+    target_std: np.ndarray,
+) -> np.ndarray:
     obj_mean, obj_std = cv2.meanStdDev(obj_bgr)
     obj_mean = np.array(obj_mean).flatten()
     obj_std  = np.array(obj_std).flatten()
-    scale = np.divide(target_std, obj_std,
-                      out=np.ones_like(target_std), where=obj_std != 0)
+    scale = np.divide(
+        target_std, obj_std, out=np.ones_like(target_std), where=obj_std != 0
+    )
+    scale = np.clip(scale, 0.5, 2.0)          # не перекрашивать радикально
     adjusted = (obj_bgr.astype(np.float32) - obj_mean) * scale + target_mean
     return np.clip(adjusted, 0, 255).astype(np.uint8)
 
 
-def match_object_to_background(obj_img, background):
-    """Адаптирует яркость/контраст объекта под всё фоновое изображение."""
+def match_object_to_background(obj_img: np.ndarray, background: np.ndarray) -> np.ndarray:
+    """Глобальная адаптация (используется в pipeline до вставки)."""
     bg_mean, bg_std = cv2.meanStdDev(background)
-    target_mean = np.array(bg_mean).flatten()
-    target_std  = np.array(bg_std).flatten()
-    return adjust_brightness_contrast(obj_img, target_mean, target_std)
+    return adjust_brightness_contrast(
+        obj_img, np.array(bg_mean).flatten(), np.array(bg_std).flatten()
+    )
 
 
-def _ellipse_mask(h: int, w: int, shrink: float = 0.06) -> np.ndarray:
+# ─────────────────────────────────────────────────────────────────────────────
+# Маска
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _feather_mask(h: int, w: int, border_frac: float = 0.22) -> np.ndarray:
     """
-    Белая эллиптическая маска (uint8) для seamlessClone.
-    shrink — отступ от края (доля от размера), нужен для Пуассона.
+    Float-маска [0..1]: 1.0 в центре, 0.0 у края.
+    Cosine-спад в зоне шириной border_frac относительно радиуса.
     """
-    mask = np.zeros((h, w), dtype=np.uint8)
-    cx, cy = w // 2, h // 2
-    ax = max(1, int(cx * (1.0 - shrink)))
-    ay = max(1, int(cy * (1.0 - shrink)))
-    cv2.ellipse(mask, (cx, cy), (ax, ay), 0, 0, 360, 255, -1)
-    return mask
+    y_idx = np.linspace(-1.0, 1.0, h, dtype=np.float32)
+    x_idx = np.linspace(-1.0, 1.0, w, dtype=np.float32)
+    yy, xx = np.meshgrid(y_idx, x_idx, indexing="ij")
+    dist   = np.sqrt(np.clip(xx**2 + yy**2, 0.0, None))
 
-
-def _rotate_scale(img: np.ndarray, angle: float, scale: float) -> np.ndarray:
-    """Вращение + масштабирование (preserve canvas size)."""
-    h, w = img.shape[:2]
-    M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, scale)
-    return cv2.warpAffine(img, M, (w, h),
-                          flags=cv2.INTER_LINEAR,
-                          borderMode=cv2.BORDER_REFLECT)
+    inner  = 1.0 - border_frac
+    mask   = np.where(
+        dist <= inner,
+        1.0,
+        np.where(
+            dist <= 1.0,
+            0.5 * (1.0 + np.cos(np.pi * (dist - inner) / (border_frac + 1e-6))),
+            0.0,
+        ),
+    )
+    return mask.astype(np.float32)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -65,154 +89,101 @@ def insert_object(
     object_img: np.ndarray,
     mask: np.ndarray | None = None,
     position: tuple | None = None,
-    scale_range: tuple = (0.10, 0.30),   # доля от меньшей стороны фона
-    angle_range: tuple = (-20, 20),
+    scale_range: tuple = (0.10, 0.30),
+    angle_range: tuple = (-15, 15),
     color_adapt: bool = True,
-    blend_strength: float = 0.7,         # 1.0 = полный Пуассон, <1 — ослабление
+    blend_strength: float = 0.85,
 ) -> tuple[np.ndarray, tuple]:
     """
-    Вставляет object_img в background с помощью Пуассонова смешивания
-    (cv2.seamlessClone MIXED_CLONE).
+    Вставляет object_img в background.
 
-    Возвращает (result_bgr, (x_center, y_center, bw, bh)) в нормированных координатах.
-    При неудаче — фолбэк на прямую вставку с маской.
+    Шаги:
+      1. Вычисление целевого размера объекта.
+      2. Выбор/проверка центра вставки.
+      3. Локальная цветовая адаптация к патчу фона.
+      4. Ресайз + вращение объекта.
+      5. Alpha-blend с feather-маской.
+
+    Возвращает (result_bgr, (x_center, y_center, bw, bh)) — нормированные координаты.
     """
     bg_h, bg_w = background.shape[:2]
     obj_h, obj_w = object_img.shape[:2]
 
-    # ── выбор масштаба и угла ──────────────────────────────────────────────
-    min_side = min(bg_h, bg_w)
+    # 1. Целевой размер
+    min_side  = min(bg_h, bg_w)
     raw_scale = random.uniform(*scale_range) * min_side / max(obj_h, obj_w)
-    angle = random.uniform(*angle_range)
+    new_w     = max(8, int(obj_w * raw_scale))
+    new_h     = max(8, int(obj_h * raw_scale))
+    angle     = random.uniform(*angle_range)
 
-    # ── целевой размер объекта ─────────────────────────────────────────────
-    new_w = max(8, int(obj_w * raw_scale))
-    new_h = max(8, int(obj_h * raw_scale))
-
-    # ── цветовая адаптация ─────────────────────────────────────────────────
-    if color_adapt:
-        object_img = match_object_to_background(object_img, background)
-
-    # ── ресайз + вращение ──────────────────────────────────────────────────
-    resized = cv2.resize(object_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    if angle != 0:
-        resized = _rotate_scale(resized, angle, 1.0)
-
-    # ── центр вставки ──────────────────────────────────────────────────────
+    # 2. Центр вставки (объект полностью внутри изображения)
     half_w, half_h = new_w // 2, new_h // 2
+    margin_x = half_w + 1
+    margin_y = half_h + 1
+
     if position is None:
-        # ограничиваем, чтобы seamlessClone не вылез за границы
-        margin_x = half_w + 2
-        margin_y = half_h + 2
         cx = random.randint(margin_x, max(margin_x, bg_w - margin_x))
         cy = random.randint(margin_y, max(margin_y, bg_h - margin_y))
     else:
-        cx = int(np.clip(position[0], half_w + 2, bg_w - half_w - 2))
-        cy = int(np.clip(position[1], half_h + 2, bg_h - half_h - 2))
+        cx = int(np.clip(position[0], margin_x, bg_w - margin_x))
+        cy = int(np.clip(position[1], margin_y, bg_h - margin_y))
 
-    # ── маска для seamlessClone ─────────────────────────────────────────────
+    # 3. Локальная цветовая адаптация
+    if color_adapt:
+        patch_radius        = max(20, int(max(new_w, new_h) * 0.6))
+        local_mean, local_std = _local_patch_stats(background, cx, cy, radius=patch_radius)
+        object_img          = adjust_brightness_contrast(object_img, local_mean, local_std)
+
+    # 4. Ресайз + вращение
+    obj_ready = cv2.resize(object_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    if angle != 0.0:
+        M = cv2.getRotationMatrix2D((new_w / 2, new_h / 2), angle, 1.0)
+        obj_ready = cv2.warpAffine(
+            obj_ready, M, (new_w, new_h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT,
+        )
+
+    # 5. Маска
     if mask is None:
-        obj_mask = _ellipse_mask(new_h, new_w, shrink=0.08)
+        alpha = _feather_mask(new_h, new_w, border_frac=0.22)
     else:
-        obj_mask = cv2.resize(mask.astype(np.uint8), (new_w, new_h),
-                              interpolation=cv2.INTER_NEAREST)
-        obj_mask = np.clip(obj_mask, 0, 255).astype(np.uint8)
+        alpha = cv2.resize(
+            mask.astype(np.float32) / 255.0, (new_w, new_h),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        alpha = alpha * _feather_mask(new_h, new_w, border_frac=0.15)
 
-    # ── Пуассоново смешивание ──────────────────────────────────────────────
-    result = _poisson_clone(resized, background, obj_mask, cx, cy, blend_strength)
+    alpha = alpha * float(blend_strength)
 
-    # ── bounding box ──────────────────────────────────────────────────────
-    x1 = max(0, cx - half_w)
-    y1 = max(0, cy - half_h)
-    x2 = min(bg_w, cx + half_w)
-    y2 = min(bg_h, cy + half_h)
+    # 6. Alpha-blend
+    result = background.copy()
 
-    x_center = ((x1 + x2) / 2) / bg_w
-    y_center = ((y1 + y2) / 2) / bg_h
-    bw = (x2 - x1) / bg_w
-    bh = (y2 - y1) / bg_h
+    x1 = cx - half_w;  y1 = cy - half_h
+    x2 = x1 + new_w;   y2 = y1 + new_h
 
-    return result, (x_center, y_center, bw, bh)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Пуассонов клон с фолбэком
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _poisson_clone(
-    src: np.ndarray,
-    dst: np.ndarray,
-    mask: np.ndarray,
-    cx: int,
-    cy: int,
-    blend_strength: float,
-) -> np.ndarray:
-    """
-    Выполняет cv2.seamlessClone (MIXED_CLONE) и возвращает результат.
-    При любой ошибке — фолбэк: прямая вставка src в dst по маске.
-    blend_strength < 1 линейно смешивает Пуассон-результат с фолбэком.
-    """
-    try:
-        cloned = cv2.seamlessClone(src, dst, mask, (cx, cy), cv2.MIXED_CLONE)
-
-        if blend_strength >= 1.0:
-            return cloned
-
-        # Частичное смешивание: Пуассон × strength + fallback × (1-strength)
-        fallback = _fallback_paste(src, dst, mask, cx, cy)
-        return cv2.addWeighted(cloned, blend_strength, fallback, 1.0 - blend_strength, 0)
-
-    except (cv2.error, Exception):
-        return _fallback_paste(src, dst, mask, cx, cy)
-
-
-def _fallback_paste(
-    src: np.ndarray,
-    dst: np.ndarray,
-    mask: np.ndarray,
-    cx: int,
-    cy: int,
-) -> np.ndarray:
-    """Прямая вставка src в dst по бинарной маске (фолбэк без смешивания)."""
-    result = dst.copy()
-    h, w = src.shape[:2]
-    bg_h, bg_w = dst.shape[:2]
-
-    x1 = cx - w // 2
-    y1 = cy - h // 2
-    x2 = x1 + w
-    y2 = y1 + h
-
-    # Обрезаем, если выходим за границы
     sx1 = max(0, -x1);  sy1 = max(0, -y1)
     dx1 = max(0, x1);   dy1 = max(0, y1)
     dx2 = min(bg_w, x2); dy2 = min(bg_h, y2)
     sw  = dx2 - dx1;    sh  = dy2 - dy1
 
-    if sw <= 0 or sh <= 0:
-        return result
+    if sw > 0 and sh > 0:
+        src_roi = obj_ready[sy1:sy1+sh, sx1:sx1+sw].astype(np.float32)
+        dst_roi = result   [dy1:dy2,    dx1:dx2   ].astype(np.float32)
+        a       = alpha    [sy1:sy1+sh, sx1:sx1+sw][..., None]
+        result[dy1:dy2, dx1:dx2] = np.clip(
+            src_roi * a + dst_roi * (1.0 - a), 0, 255
+        ).astype(np.uint8)
 
-    src_roi  = src [sy1:sy1+sh, sx1:sx1+sw]
-    mask_roi = mask[sy1:sy1+sh, sx1:sx1+sw]
-    alpha    = (mask_roi[..., None] / 255.0).astype(np.float32)
+    # 7. YOLO bbox (нормированные координаты)
+    cx_n = ((dx1 + dx2) / 2) / bg_w
+    cy_n = ((dy1 + dy2) / 2) / bg_h
+    bw_n = (dx2 - dx1) / bg_w
+    bh_n = (dy2 - dy1) / bg_h
 
-    result[dy1:dy2, dx1:dx2] = (
-        src_roi.astype(np.float32) * alpha +
-        result[dy1:dy2, dx1:dx2].astype(np.float32) * (1.0 - alpha)
-    ).astype(np.uint8)
-
-    return result
+    return result, (cx_n, cy_n, bw_n, bh_n)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Устаревший API (оставлен для обратной совместимости)
-# ─────────────────────────────────────────────────────────────────────────────
-
+# Псевдоним для обратной совместимости
 def create_feather_mask(h, w, border_ratio=0.2):
-    """Мягкая маска с градиентом у края (старый метод)."""
-    y, x = np.ogrid[:h, :w]
-    dist_to_edge = np.minimum(
-        np.minimum(y, h - 1 - y), np.minimum(x, w - 1 - x)
-    ).astype(np.float32)
-    max_dist = max(h, w) / 2 * (1.0 - border_ratio)
-    return np.clip(dist_to_edge / (max_dist + 1e-6), 0.0, 1.0)
+    return _feather_mask(h, w, border_frac=border_ratio)

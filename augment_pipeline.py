@@ -15,7 +15,6 @@ from background_clean import remove_labeled_instances_bgr
 from gan_metrics import compute_fid_folders
 from experiment_utils import create_experiment, save_experiment_config, save_metrics
 from yolo_validator import validate_yolo
-from stylegan2_ada_trainer import train_stylegan2_ada
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -226,7 +225,7 @@ def run_full_pipeline(
     notify_stage(stage_callback, "Обучение GAN", 2, 5)
     stage_start = time.time()
 
-    weights_dir     = os.path.join(tmp_root, "weights")
+    weights_dir    = os.path.join(tmp_root, "weights")
     trained_classes = []
 
     for cls, num_to_generate in generation_plan.items():
@@ -241,39 +240,27 @@ def run_full_pipeline(
         os.makedirs(class_weights_dir, exist_ok=True)
 
         try:
-            if model_type.lower() == "stylegan2_ada":
-                # ── StyleGAN2-ADA ─────────────────────────────────────────
-                metrics = train_stylegan2_ada(
-                    class_dir=crop_dir,
-                    save_dir=class_weights_dir,
-                    img_size=img_size,
-                    device=model_device,
-                    progress_callback=progress_callback,
-                    # kimg и cfg выбираются автоматически по размеру датасета
-                    **gan_train_kwargs.get("sg2ada_kwargs", {}),
-                )
-            else:
-                # ── Оригинальные GAN-архитектуры ─────────────────────────
-                metrics = train_gan(
-                    class_dir=crop_dir,
-                    save_dir=class_weights_dir,
-                    epochs=epochs,
-                    device=model_device,
-                    model_type=model_type,
-                    img_size=img_size,
-                    use_ema=True,
-                    progress_callback=progress_callback,
-                    **{k: v for k, v in gan_train_kwargs.items() if k != "sg2ada_kwargs"},
-                )
+            metrics = train_gan(
+                class_dir=crop_dir,
+                save_dir=class_weights_dir,
+                epochs=epochs,
+                device=model_device,
+                model_type=model_type,
+                img_size=img_size,
+                use_ema=True,
+                progress_callback=progress_callback,
+                **gan_train_kwargs,
+            )
 
             if metrics is not None:
                 trained_classes.append(cls)
                 gan_metrics_by_class[int(cls)]   = metrics
                 epoch_histories_by_cls[int(cls)] = metrics.get("epoch_history", [])
 
+                # обновляем img_size фактическим значением из train_gan
                 actual_size = metrics.get("img_size_used", img_size)
                 if actual_size != img_size:
-                    print(f"[INFO] class_{cls}: img_size скорректирован до {actual_size}")
+                    print(f"[INFO] class_{cls}: img_size adjusted to {actual_size}")
 
         except Exception as e:
             print(f"[TRAIN ERROR] class {cls}: {e}")
@@ -292,26 +279,21 @@ def run_full_pipeline(
     synthetic_objects = []
 
     for cls in trained_classes:
-        num_to_generate  = generation_plan[cls]
-        class_weights_dir = os.path.join(weights_dir, f"class_{cls}")
-        class_output_dir  = os.path.join(synth_dir,   f"class_{cls}")
+        num_to_generate = generation_plan[cls]
 
-        if model_type.lower() == "stylegan2_ada":
-            # ── StyleGAN2-ADA: путь к .pkl ────────────────────────────────
-            generator_path = os.path.join(class_weights_dir, "generator.pkl")
-            ema_path       = None       # SG2-ADA уже хранит G_ema в pkl
-            actual_size    = gan_metrics_by_class.get(int(cls), {}).get("img_size_used", img_size)
-        else:
-            # ── Стандартный GAN: путь к .pth ─────────────────────────────
-            generator_path = os.path.join(class_weights_dir, "generator.pth")
-            ema_path       = os.path.join(class_weights_dir, "generator_ema.pth")
-            if not os.path.exists(ema_path):
-                ema_path = None
-            actual_size    = gan_metrics_by_class.get(int(cls), {}).get("img_size_used", img_size)
+        class_weights_dir = os.path.join(weights_dir, f"class_{cls}")
+        class_output_dir  = os.path.join(synth_dir, f"class_{cls}")
+
+        # Берём фактический img_size из сохранённых метрик
+        actual_size = gan_metrics_by_class.get(int(cls), {}).get("img_size_used", img_size)
+
+        ema_path = os.path.join(class_weights_dir, "generator_ema.pth")
+        if not os.path.exists(ema_path):
+            ema_path = None
 
         try:
             generate_objects(
-                generator_path=generator_path,
+                generator_path=os.path.join(class_weights_dir, "generator.pth"),
                 output_dir=class_output_dir,
                 num_images=num_to_generate,
                 latent_dim=128,
@@ -343,7 +325,7 @@ def run_full_pipeline(
                 )
 
     stage_timings["generation"] = time.time() - stage_start
-    
+
     # ── Этап 4: Интеграция ────────────────────────────────────────────────────
 
     notify_stage(stage_callback, "Интеграция объектов", 4, 5)

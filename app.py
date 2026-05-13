@@ -115,19 +115,6 @@ with tempfile.TemporaryDirectory() as tmpdir:
             "Чтобы сравнить архитектуры, запускайте прогоны с **одинаковыми эпохами** и одним архивом."
         )
 
-    with st.expander("Сравнение архитектур GAN"):
-        st.markdown(
-            "1. Зафиксируйте один и тот же ZIP и число эпох.\n"
-            "2. Прогоны с разными значениями **Архитектура GAN**.\n"
-            "3. Сравните блок **GAN: FID** и визуально сгенерированные объекты.\n\n"
-            "| Архитектура | Особенности |\n"
-            "|---|---|\n"
-            "| **ssd** | StyleGAN-like, mapping 4 слоя, BN в D, noise scale 1.0 |\n"
-            "| **ssd_lite** | StyleGAN-like, mapping 2 слоя, InstanceNorm в D, noise scale 0.25 |\n"
-            "| **dcgan** | DCGAN baseline, фиксирован на 64×64 |\n"
-            "| **dcgan_sn** | DCGAN + spectral norm, без BN перед Tanh |\n"
-        )
-
     # ─────────────────────────────────────────────────────────────────────────
     # Sidebar
     # ─────────────────────────────────────────────────────────────────────────
@@ -137,11 +124,13 @@ with tempfile.TemporaryDirectory() as tmpdir:
         st.header("⚙️ Параметры генерации")
 
         _gan_options = {
-            "ssd":      "SSD — StyleGAN-like (baseline)",
-            "ssd_lite": "SSD lite — слабее noise, InstanceNorm в D",
-            "dcgan":    "DCGAN (baseline, 64×64)",
-            "dcgan_sn": "DCGAN + SN-D, без BN перед Tanh (64×64)",
+            "stylegan2_ada": "StyleGAN2-ADA ⭐ (лучшее качество, малые датасеты)",
+            "ssd":           "SSD — StyleGAN-like (baseline)",
+            "ssd_lite":      "SSD lite — слабее noise, InstanceNorm в D",
+            "dcgan":         "DCGAN (baseline, 64×64)",
+            "dcgan_sn":      "DCGAN + SN-D, без BN перед Tanh (64×64)",
         }
+        
         model_type = st.selectbox(
             "Архитектура GAN",
             options=list(_gan_options.keys()),
@@ -149,7 +138,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
             format_func=lambda k: _gan_options[k],
         )
 
-        # img_size — для DCGAN-вариантов фиксирован на 64
+        # img_size
         if model_type in ("dcgan", "dcgan_sn"):
             selected_img_size = 64
             st.caption("Размер изображения зафиксирован на **64×64** для DCGAN.")
@@ -160,14 +149,40 @@ with tempfile.TemporaryDirectory() as tmpdir:
                 value=64,
                 help="64 — быстрее и стабильнее для малых датасетов; 128 — лучше деталь.",
             )
-
-        epochs = st.slider(
-            "Эпохи обучения",
-            min_value=10,
-            max_value=150,
-            value=50,
-            step=5,
-        )
+            
+         # StyleGAN2-ADA использует kimg вместо epochs
+        if model_type == "stylegan2_ada":
+            epochs = 0   # не используется
+            sg2ada_kimg = st.slider(
+                "Длина обучения SG2-ADA (kimg)",
+                min_value=50,
+                max_value=1000,
+                value=300,
+                step=50,
+                help=(
+                    "kimg = тысяч изображений через генератор за обучение. "
+                    "150–300 для малых датасетов (<200 кропов), "
+                    "500–800 для более крупных."
+                ),
+            )
+            sg2ada_truncation = st.slider(
+                "Truncation ψ (качество vs. разнообразие)",
+                min_value=0.3,
+                max_value=1.0,
+                value=0.7,
+                step=0.05,
+                help="0.5 — безопаснее / усреднённее; 0.7 — баланс; 1.0 — максимум разнообразия.",
+            )
+        else:
+            sg2ada_kimg       = 300
+            sg2ada_truncation = 0.7
+            epochs = st.slider(
+                "Эпохи обучения",
+                min_value=10,
+                max_value=150,
+                value=50,
+                step=5,
+            )
 
         st.divider()
 
@@ -300,6 +315,11 @@ with tempfile.TemporaryDirectory() as tmpdir:
             "n_critic":  int(n_critic),
             "r1_gamma":  float(r1_gamma),
             "save_best": bool(save_best),
+            # Параметры StyleGAN2-ADA (игнорируются при других архитектурах)
+            # "sg2ada_kwargs": {
+            #     "kimg":           sg2ada_kimg,
+            #     "truncation_psi": sg2ada_truncation,
+            # },
         }
 
         results = run_full_pipeline(
@@ -362,7 +382,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
                     "G loss":     round(m.get("g_loss", 0), 4),
                     "D loss":     round(m.get("d_loss", 0), 4),
                     "Лучш. G":    round(m.get("best_g_loss", 0), 4),
-                    "Эпоха лучш.": m.get("best_epoch", -1),
+                    "Эпоха/kimg":  m.get("best_epoch", -1),
                     "Размер (px)": m.get("img_size_used", selected_img_size),
                 }
             )
@@ -426,7 +446,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
     # Preview: аугментированные изображения
     # ─────────────────────────────────────────────────────────────────────────
 
-    st.subheader("🖼 Превью аугментированных изображений")
+    st.subheader("Превью аугментированных изображений")
 
     # Определяем папку с результатами
     preview_dir = os.path.join(output_dir, "train", "images")
@@ -448,33 +468,6 @@ with tempfile.TemporaryDirectory() as tmpdir:
     else:
         st.info("Папка результатов не найдена.")
 
-    # ── Превью синтетических объектов (GAN-выход) ─────────────────────────────
-    synth_dir = results.get("synth_dir", "")
-    if synth_dir and os.path.isdir(synth_dir):
-        with st.expander("🔬 Синтетические объекты (выход GAN)", expanded=False):
-            st.caption(
-                "Здесь показаны объекты, напрямую сгенерированные GAN до вставки в фон. "
-                "Если качество низкое — увеличьте число эпох или количество обучающих кропов."
-            )
-            for class_subdir in sorted(os.listdir(synth_dir)):
-                cls_path = os.path.join(synth_dir, class_subdir)
-                if not os.path.isdir(cls_path):
-                    continue
-                # Пробуем извлечь cls_id из имени папки class_N
-                try:
-                    cls_id = int(class_subdir.split("_")[1])
-                    cls_label = get_class_label(cls_id, result_class_name_to_id)
-                except (IndexError, ValueError):
-                    cls_label = class_subdir
-
-                st.markdown(f"**{cls_label}**")
-                synth_imgs = _preview_images(cls_path, n=8)
-                if synth_imgs:
-                    cols = st.columns(4)
-                    for i, p in enumerate(synth_imgs):
-                        cols[i % 4].image(str(p), use_container_width=True)
-                else:
-                    st.caption("Нет изображений.")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Export

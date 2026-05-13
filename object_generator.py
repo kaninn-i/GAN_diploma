@@ -7,10 +7,48 @@ from gan_model import Generator as DCGANGenerator
 from dcgan_sn_model import Generator as DCGANSNGenerator
 
 
-def generate_objects(generator_path, output_dir, num_images, latent_dim=128,
-                     device="cuda", batch_size=64, model_type="dcgan", img_size=64,
-                     ema_weights_path=None):
+def generate_objects(
+    generator_path,
+    output_dir,
+    num_images,
+    latent_dim=128,
+    device="cuda",
+    batch_size=64,
+    model_type="dcgan",
+    img_size=64,
+    ema_weights_path=None,
+    # ── StyleGAN2-ADA ────────────────────────────────────────────────────────
+    sg2ada_repo=None,
+    truncation_psi=0.7,
+    progress_callback=None,
+):
+    """
+    Генерация синтетических объектов.
+
+    model_type:
+        "dcgan"        – оригинальный DCGAN
+        "dcgan_sn"     – DCGAN со spectral norm
+        "ssd"          – SSD-генератор
+        "ssd_lite"     – облегчённый SSD
+        "stylegan2_ada"– StyleGAN2-ADA (.pkl чекпоинт; generator_path = путь к .pkl)
+    """
     mt = model_type.lower()
+
+    # ── StyleGAN2-ADA ─────────────────────────────────────────────────────────
+    if mt == "stylegan2_ada":
+        from stylegan2_ada_generator import generate_objects_sg2ada
+        return generate_objects_sg2ada(
+            generator_path=generator_path,
+            output_dir=output_dir,
+            num_images=num_images,
+            device=device,
+            batch_size=min(16, batch_size),   # SG2 тяжелее, батч меньше
+            truncation_psi=truncation_psi,
+            sg2ada_repo=sg2ada_repo,
+            progress_callback=progress_callback,
+        )
+
+    # ── GAN (без изменений) ───────────────────────────────────────────────────
     if mt == "ssd":
         generator = SSDGenerator(latent_dim, img_size=img_size).to(device)
     elif mt == "ssd_lite":

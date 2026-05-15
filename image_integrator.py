@@ -11,13 +11,9 @@ import numpy as np
 import random
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Цветовая адаптация
-# ─────────────────────────────────────────────────────────────────────────────
 
-def _local_patch_stats(
-    background: np.ndarray, cx: int, cy: int, radius: int = 40
-) -> tuple[np.ndarray, np.ndarray]:
+def _local_patch_stats(background: np.ndarray, cx: int, cy: int, radius: int = 40) -> tuple[np.ndarray, np.ndarray]:
     """Среднее и стд. отклонение локального патча фона вокруг точки (cx, cy)."""
     h, w = background.shape[:2]
     x1, x2 = max(0, cx - radius), min(w, cx + radius)
@@ -29,11 +25,7 @@ def _local_patch_stats(
     return np.array(mean).flatten(), np.array(std).flatten()
 
 
-def adjust_brightness_contrast(
-    obj_bgr: np.ndarray,
-    target_mean: np.ndarray,
-    target_std: np.ndarray,
-) -> np.ndarray:
+def adjust_brightness_contrast(obj_bgr: np.ndarray, target_mean: np.ndarray, target_std: np.ndarray) -> np.ndarray:
     obj_mean, obj_std = cv2.meanStdDev(obj_bgr)
     obj_mean = np.array(obj_mean).flatten()
     obj_std  = np.array(obj_std).flatten()
@@ -53,10 +45,7 @@ def match_object_to_background(obj_img: np.ndarray, background: np.ndarray) -> n
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Маска
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _feather_mask(h: int, w: int, border_frac: float = 0.22) -> np.ndarray:
     """
     Float-маска [0..1]: 1.0 в центре, 0.0 у края.
@@ -80,10 +69,7 @@ def _feather_mask(h: int, w: int, border_frac: float = 0.22) -> np.ndarray:
     return mask.astype(np.float32)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Основная функция вставки
-# ─────────────────────────────────────────────────────────────────────────────
-
 def insert_object(
     background: np.ndarray,
     object_img: np.ndarray,
@@ -109,14 +95,14 @@ def insert_object(
     bg_h, bg_w = background.shape[:2]
     obj_h, obj_w = object_img.shape[:2]
 
-    # 1. Целевой размер
+    # Целевой размер
     min_side  = min(bg_h, bg_w)
     raw_scale = random.uniform(*scale_range) * min_side / max(obj_h, obj_w)
     new_w     = max(8, int(obj_w * raw_scale))
     new_h     = max(8, int(obj_h * raw_scale))
     angle     = random.uniform(*angle_range)
 
-    # 2. Центр вставки (объект полностью внутри изображения)
+    # Центр вставки
     half_w, half_h = new_w // 2, new_h // 2
     margin_x = half_w + 1
     margin_y = half_h + 1
@@ -128,13 +114,13 @@ def insert_object(
         cx = int(np.clip(position[0], margin_x, bg_w - margin_x))
         cy = int(np.clip(position[1], margin_y, bg_h - margin_y))
 
-    # 3. Локальная цветовая адаптация
+    # Локальная цветовая адаптация
     if color_adapt:
         patch_radius        = max(20, int(max(new_w, new_h) * 0.6))
         local_mean, local_std = _local_patch_stats(background, cx, cy, radius=patch_radius)
         object_img          = adjust_brightness_contrast(object_img, local_mean, local_std)
 
-    # 4. Ресайз + вращение
+    # Ресайз + вращение
     obj_ready = cv2.resize(object_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
     if angle != 0.0:
         M = cv2.getRotationMatrix2D((new_w / 2, new_h / 2), angle, 1.0)
@@ -144,7 +130,7 @@ def insert_object(
             borderMode=cv2.BORDER_REFLECT,
         )
 
-    # 5. Маска
+    # Маска
     if mask is None:
         alpha = _feather_mask(new_h, new_w, border_frac=0.22)
     else:
@@ -156,7 +142,7 @@ def insert_object(
 
     alpha = alpha * float(blend_strength)
 
-    # 6. Alpha-blend
+    # Alpha-blend
     result = background.copy()
 
     x1 = cx - half_w;  y1 = cy - half_h
@@ -175,7 +161,7 @@ def insert_object(
             src_roi * a + dst_roi * (1.0 - a), 0, 255
         ).astype(np.uint8)
 
-    # 7. YOLO bbox (нормированные координаты)
+    # YOLO bbox (нормированные координаты)
     cx_n = ((dx1 + dx2) / 2) / bg_w
     cy_n = ((dy1 + dy2) / 2) / bg_h
     bw_n = (dx2 - dx1) / bg_w

@@ -1,7 +1,6 @@
 import os
 import shutil
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
@@ -148,12 +147,9 @@ def train_gan(
 ):
     mt = model_type.lower()
 
-    # DCGAN зафиксирован на 64
     if mt in ("dcgan", "dcgan_sn"):
         img_size = 64
 
-    # Для SSD-моделей приводим img_size к ближайшей степени 2
-    # чтобы размер датасета совпадал с выходом генератора
     if mt in ("ssd", "ssd_lite"):
         img_size = _actual_generator_output_size(img_size)
 
@@ -167,7 +163,6 @@ def train_gan(
     if augment_policy_p is None:
         _, augment_policy_p = _diff_augment_policy_for_n(n_samples)
 
-    # Смягчаем R1 для малых датасетов, чтобы не убивать градиенты
     if n_samples < 100 and r1_gamma > 5.0:
         r1_gamma = 5.0
     if n_samples < 50 and r1_gamma > 1.0:
@@ -245,7 +240,6 @@ def train_gan(
     best_g = float("inf")
     best_epoch = -1
 
-    # ── история лоссов по эпохам ──
     epoch_history: list[dict] = []
 
     for epoch in range(epochs):
@@ -363,6 +357,6 @@ def train_gan(
         "d_loss": avg_d,
         "best_g_loss": best_g,
         "best_epoch": best_epoch,
-        "epoch_history": epoch_history,   # ← новое поле
-        "img_size_used": img_size,         # ← для диагностики
+        "epoch_history": epoch_history,   
+        "img_size_used": img_size,       
     }

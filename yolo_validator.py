@@ -28,12 +28,7 @@ def _is_split_dataset(dataset_dir):
     )
 
 
-def _split_flat_dataset(
-    dataset_dir,
-    output_dir,
-    val_ratio=0.2,
-    seed=42,
-):
+def _split_flat_dataset(dataset_dir, output_dir, val_ratio=0.2, seed=42):
     images_dir = os.path.join(dataset_dir, "images")
     labels_dir = os.path.join(dataset_dir, "labels")
 
@@ -62,17 +57,15 @@ def _split_flat_dataset(
         pairs = []
 
         for img_path in _find_images(images_dir):
-
+            
             base = Path(img_path).stem
             lbl_path = os.path.join(labels_dir, base + ".txt")
-
+            
             if os.path.isfile(lbl_path):
                 pairs.append((img_path, lbl_path))
 
     if not pairs:
-        raise RuntimeError(
-            f"Не найдено ни одной пары изображение+аннотация в {dataset_dir}"
-        )
+        raise RuntimeError(f"Не найдено ни одной пары изображение+аннотация в {dataset_dir}")
 
     random.Random(seed).shuffle(pairs)
 
@@ -94,24 +87,14 @@ def _split_flat_dataset(
 
         for img_path, lbl_path in subset_pairs:
 
-            shutil.copy2(
-                img_path,
-                os.path.join(img_out, Path(img_path).name),
-            )
+            shutil.copy2(img_path,os.path.join(img_out, Path(img_path).name))
 
-            shutil.copy2(
-                lbl_path,
-                os.path.join(lbl_out, Path(lbl_path).name),
-            )
+            shutil.copy2(lbl_path, os.path.join(lbl_out, Path(lbl_path).name))
 
     return output_dir
 
 
-def create_dataset_yaml(
-    dataset_dir,
-    yaml_path,
-    class_names=None,
-):
+def create_dataset_yaml(dataset_dir, yaml_path, class_names=None):
     if class_names is None:
         class_names = ["object"]
 
@@ -140,18 +123,15 @@ def validate_yolo(
     os.makedirs(output_dir, exist_ok=True)
 
     if _is_split_dataset(dataset_dir):
-
         ready_dir = dataset_dir
 
     else:
-
         ready_dir = os.path.join(
             output_dir,
             "split_dataset",
         )
 
         if not _is_split_dataset(ready_dir):
-
             _split_flat_dataset(
                 dataset_dir,
                 ready_dir,
@@ -208,18 +188,10 @@ def validate_yolo(
             history.append(
                 {
                     "epoch": int(row["epoch"]),
-                    "precision": float(
-                        row.get("metrics/precision(B)", 0)
-                    ),
-                    "recall": float(
-                        row.get("metrics/recall(B)", 0)
-                    ),
-                    "map50": float(
-                        row.get("metrics/mAP50(B)", 0)
-                    ),
-                    "map5095": float(
-                        row.get("metrics/mAP50-95(B)", 0)
-                    ),
+                    "precision": float(row.get("metrics/precision(B)", 0)),
+                    "recall": float(row.get("metrics/recall(B)", 0)),
+                    "map50": float(row.get("metrics/mAP50(B)", 0)),
+                    "map5095": float(row.get("metrics/mAP50-95(B)", 0)),
                 }
             )
 

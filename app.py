@@ -12,12 +12,8 @@ from data_utils import analyze_dataset
 
 
 st.set_page_config(page_title="GAN Dataset Augmentation", layout="wide")
-st.title("🎨 Аугментация датасета для детекции объектов")
+st.title("Аугментация датасета для детекции объектов")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# UI helpers
-# ─────────────────────────────────────────────────────────────────────────────
 
 def update_stage(stage_name, stage_num, stage_total):
     stage_progress.progress(stage_num / stage_total)
@@ -30,7 +26,6 @@ def update_epoch(progress, message):
 
 
 def get_class_label(cls_id, class_name_to_id):
-    """Читаемое имя класса: реальное (XML) или 'class_N' (YOLO)."""
     if class_name_to_id:
         id_to_name = {v: k for k, v in class_name_to_id.items()}
         return id_to_name.get(cls_id, f"class_{cls_id}")
@@ -38,23 +33,16 @@ def get_class_label(cls_id, class_name_to_id):
 
 
 def _preview_images(directory: str, n: int = 8) -> list[Path]:
-    """
-    Собирает до n изображений из directory.
-    Приоритет — аугментированные (aug_*), потом любые остальные.
-    """
     exts = {"*.jpg", "*.jpeg", "*.png", "*.JPG", "*.PNG"}
     all_imgs: list[Path] = []
     for pat in exts:
         all_imgs.extend(Path(directory).glob(pat))
-
     aug  = [p for p in all_imgs if p.stem.startswith("aug_")]
     rest = [p for p in all_imgs if not p.stem.startswith("aug_")]
     return (aug + rest)[:n]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Upload
-# ─────────────────────────────────────────────────────────────────────────────
+# Загрузка датасета 
 
 uploaded_zip = st.file_uploader(
     "Загрузите ZIP архив с датасетом (YOLO .txt или Pascal VOC .xml)",
@@ -88,59 +76,38 @@ with tempfile.TemporaryDirectory() as tmpdir:
     fmt = "Pascal VOC (XML)" if class_name_to_id else "YOLO (TXT)"
     st.caption(f"Обнаружен формат: **{fmt}**")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Диагностика датасета
-    # ─────────────────────────────────────────────────────────────────────────
+    # Диагностика 
 
-    st.subheader("📊 Диагностика датасета")
+    st.subheader("Диагностика датасета")
 
-    stats_df = pd.DataFrame(
-        [
-            {
-                "Класс": get_class_label(cls, class_name_to_id),
-                "ID": cls,
-                "Объектов": count,
-            }
-            for cls, count in class_counts.items()
-        ]
-    )
-
-    st.dataframe(stats_df, use_container_width=True)
+    stats_df = pd.DataFrame([
+        {
+            "Класс":    get_class_label(cls, class_name_to_id),
+            "ID":       cls,
+            "Объектов": count,
+        }
+        for cls, count in class_counts.items()
+    ])
+    st.dataframe(stats_df, width='stretch')
 
     total_objects = sum(class_counts.values())
     if total_objects < 120:
         st.info(
-            "Объектов в датасете немного. Для стабильного GAN желательно **100–300+ кропов на класс** "
-            "(включите **несколько вариантов кропа** в боковой панели). "
-            "Чтобы сравнить архитектуры, запускайте прогоны с **одинаковыми эпохами** и одним архивом."
+            "Объектов немного. Для стабильного GAN желательно **100–300+ кропов на класс** "
+            "(включите несколько вариантов кропа в боковой панели)."
         )
 
-    with st.expander("Сравнение архитектур GAN"):
-        st.markdown(
-            "1. Зафиксируйте один и тот же ZIP и число эпох.\n"
-            "2. Прогоны с разными значениями **Архитектура GAN**.\n"
-            "3. Сравните блок **GAN: FID** и визуально сгенерированные объекты.\n\n"
-            "| Архитектура | Особенности |\n"
-            "|---|---|\n"
-            "| **ssd** | StyleGAN-like, mapping 4 слоя, BN в D, noise scale 1.0 |\n"
-            "| **ssd_lite** | StyleGAN-like, mapping 2 слоя, InstanceNorm в D, noise scale 0.25 |\n"
-            "| **dcgan** | DCGAN baseline, фиксирован на 64×64 |\n"
-            "| **dcgan_sn** | DCGAN + spectral norm, без BN перед Tanh |\n"
-        )
+    # Боковая панель 
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Sidebar
-    # ─────────────────────────────────────────────────────────────────────────
+    st.sidebar.title("Параметры генерации")
 
     with st.sidebar:
 
-        st.header("⚙️ Параметры генерации")
-
         _gan_options = {
-            "ssd":      "SSD — StyleGAN-like (baseline)",
+            "dcgan":    "DCGAN",
+            "dcgan_sn": "DCGAN + SN-D, без BN перед Tanh",
+            "ssd":      "SSD — StyleGAN-like",
             "ssd_lite": "SSD lite — слабее noise, InstanceNorm в D",
-            "dcgan":    "DCGAN (baseline, 64×64)",
-            "dcgan_sn": "DCGAN + SN-D, без BN перед Tanh (64×64)",
         }
         model_type = st.selectbox(
             "Архитектура GAN",
@@ -149,32 +116,12 @@ with tempfile.TemporaryDirectory() as tmpdir:
             format_func=lambda k: _gan_options[k],
         )
 
-        # img_size — для DCGAN-вариантов фиксирован на 64
-        if model_type in ("dcgan", "dcgan_sn"):
-            selected_img_size = 64
-            st.caption("Размер изображения зафиксирован на **64×64** для DCGAN.")
-        else:
-            selected_img_size = st.select_slider(
-                "Размер кропа / выхода GAN (px)",
-                options=[64, 128],
-                value=64,
-                help="64 — быстрее и стабильнее для малых датасетов; 128 — лучше деталь.",
-            )
-
-        epochs = st.slider(
-            "Эпохи обучения",
-            min_value=10,
-            max_value=150,
-            value=50,
-            step=5,
-        )
+        epochs = st.slider("Эпохи обучения", min_value=10, max_value=150, value=50, step=5)
 
         st.divider()
+        st.subheader("Баланс классов")
 
-        st.subheader("Балансировка")
-
-        use_balance = st.checkbox("Автоматически балансировать классы", value=True)
-
+        use_balance = st.checkbox("Автоматически балансировать классы", value=False)
         generation_plan = None
 
         if not use_balance:
@@ -202,26 +149,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
         st.divider()
 
-        max_objs_per_img = st.slider(
-            "Макс. объектов на изображение",
-            min_value=1,
-            max_value=5,
-            value=3,
-        )
-
-        blend_strength = st.slider(
-            "Сила Пуассонова смешивания",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.8,
-            step=0.1,
-            help="1.0 — полный seamlessClone; <1.0 — линейное смешивание с прямой вставкой.",
-        )
-
-        st.divider()
-
         do_split = st.checkbox("Разбить на train/val/test", value=True)
-
         split_config = None
 
         if do_split:
@@ -240,39 +168,51 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
         st.divider()
 
-        crop_jitter_variants = st.slider(
-            "Вариантов кропа на объект (jitter)",
-            min_value=1,
-            max_value=5,
-            value=3,
-            help="Несколько смещений кропа без новых фото — больше данных для GAN.",
-        )
+        with st.expander("Дополнительно: тонкие настройки GAN"):
 
-        with st.expander("Дополнительно: обучение GAN"):
-            n_critic    = st.slider("Шагов D на один шаг G (n_critic)", 1, 5, 1)
-            r1_gamma    = st.slider("R1 регуляризация D (0 = выкл.)", 0.0, 30.0, 10.0, 0.5)
-            save_best   = st.checkbox("Сохранять лучший чекпоинт по G-loss", value=True)
-            compute_fid = st.checkbox("Считать FID после генерации", value=True)
-            log_experiment = st.checkbox("Лог в runs/ (experiment_utils)", value=False)
+            if model_type in ("dcgan", "dcgan_sn"):
+                selected_img_size = 64
+                st.caption("Размер зафиксирован на **64×64** для DCGAN.")
+            else:
+                selected_img_size = st.select_slider(
+                    "Размер кропа / выхода GAN (px)",
+                    options=[64, 128],
+                    value=64,
+                    help="64 — быстрее и стабильнее для малых датасетов.",
+                )
 
-        with st.expander("Интеграция (фон без объектов)"):
-            use_clean_background = st.checkbox(
-                "Удалять существующие bbox (inpaint) перед вставкой синтетики",
-                value=True,
+            n_critic       = st.slider("Шагов D на один шаг G", 1, 5, 1)
+            r1_gamma       = st.slider("R1 регуляризация D (0 = выкл.)", 0.0, 30.0, 10.0, 0.5)
+            save_best      = st.checkbox("Сохранять лучший чекпоинт по G-loss", value=True)
+            compute_fid    = st.checkbox("Считать FID после генерации", value=True)
+            log_experiment = st.checkbox("Лог в runs/", value=True)
+
+            max_objs_per_img = st.slider("Макс. объектов на изображение", 1, 5, 3)
+
+            blend_strength = st.slider(
+                "Сила смешивания", 0.0, 1.0, 0.8, 0.1,
+                help="1.0 — полный seamlessClone; <1.0 — линейное смешивание.",
             )
-            inpaint_dilate = st.slider("Дилатация маски bbox (px)", 0, 5, 2)
-            inpaint_radius = st.slider("Радиус inpaint", 1, 10, 3)
 
-        run_yolo = st.checkbox("YOLO validation", value=False)
+            crop_jitter_variants = st.slider(
+                "Вариантов кропа на объект (jitter)", 1, 5, 3,
+                help="Несколько смещений кропа без новых фото.",
+            )
 
-        run_button = st.button(
-            "🚀 Запустить аугментацию",
-            use_container_width=True,
-        )
+            with st.expander("Интеграция (фон без объектов)"):
+                use_clean_background = st.checkbox(
+                    "Удалять существующие bbox (inpaint) перед вставкой", value=True,
+                )
+                inpaint_dilate = st.slider("Дилатация маски bbox (px)", 0, 5, 2)
+                inpaint_radius = st.slider("Радиус inpaint", 1, 10, 3)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Run
-    # ─────────────────────────────────────────────────────────────────────────
+        st.divider()
+
+        run_yolo = st.checkbox("Валидация с помощью YOLO", value=False)
+
+        run_button = st.button("Запустить аугментацию", width='stretch')
+
+    # Валидация формы 
 
     if not run_button:
         st.stop()
@@ -286,7 +226,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
         st.stop()
 
     st.divider()
-    st.subheader("⚡ Выполнение")
+    st.subheader("Выполнение")
 
     stage_progress = st.progress(0)
     stage_status   = st.empty()
@@ -334,41 +274,38 @@ with tempfile.TemporaryDirectory() as tmpdir:
         st.code(traceback.format_exc())
         st.stop()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Results
-    # ─────────────────────────────────────────────────────────────────────────
+    # Результаты 
 
     result_class_name_to_id = results.get("class_name_to_id", {})
 
-    st.success("🎉 Аугментация завершена!")
+    st.success("Аугментация завершена!")
 
-    # ── Тайминги ──────────────────────────────────────────────────────────────
+    # Тайминги
     if "timings" in results:
-        st.subheader("⏱ Время выполнения")
-        timings_df = pd.DataFrame(
-            [{"Этап": name, "Секунд": round(v, 2)} for name, v in results["timings"].items()]
-        )
-        st.dataframe(timings_df, use_container_width=True)
+        st.subheader("Время выполнения")
+        timings_df = pd.DataFrame([
+            {"Этап": name, "Секунд": round(v, 2)}
+            for name, v in results["timings"].items()
+        ])
+        st.dataframe(timings_df, width='stretch')
 
-    # ── GAN метрики ───────────────────────────────────────────────────────────
+    # GAN метрики
     gan_metrics = results.get("gan_metrics")
     if gan_metrics:
-        st.subheader("GAN: лоссы (последняя эпоха)")
+        st.subheader("Функции потерь GAN (последняя эпоха)")
         gm_rows = []
         for cls_id, m in sorted(gan_metrics.items(), key=lambda x: x[0]):
-            gm_rows.append(
-                {
-                    "Класс":      get_class_label(cls_id, result_class_name_to_id),
-                    "G loss":     round(m.get("g_loss", 0), 4),
-                    "D loss":     round(m.get("d_loss", 0), 4),
-                    "Лучш. G":    round(m.get("best_g_loss", 0), 4),
-                    "Эпоха лучш.": m.get("best_epoch", -1),
-                    "Размер (px)": m.get("img_size_used", selected_img_size),
-                }
-            )
-        st.dataframe(pd.DataFrame(gm_rows), use_container_width=True)
+            gm_rows.append({
+                "Класс":       get_class_label(cls_id, result_class_name_to_id),
+                "G loss":      round(m.get("g_loss", 0), 4),
+                "D loss":      round(m.get("d_loss", 0), 4),
+                "Лучш. G":     round(m.get("best_g_loss", 0), 4),
+                "Эпоха лучш.": m.get("best_epoch", -1),
+                "Размер (px)": m.get("img_size_used", selected_img_size),
+            })
+        st.dataframe(pd.DataFrame(gm_rows), width='stretch')
 
-    # ── FID ───────────────────────────────────────────────────────────────────
+    # FID
     gan_fid = results.get("gan_fid")
     if gan_fid:
         st.subheader("GAN: FID (кропы vs синтетика, ниже лучше)")
@@ -376,12 +313,12 @@ with tempfile.TemporaryDirectory() as tmpdir:
             {"Класс": get_class_label(k, result_class_name_to_id), "FID": round(v, 2)}
             for k, v in sorted(gan_fid.items(), key=lambda x: x[0])
         ]
-        st.dataframe(pd.DataFrame(fid_rows), use_container_width=True)
+        st.dataframe(pd.DataFrame(fid_rows), width='stretch')
 
-    # ── Графики обучения GAN ─────────────────────────────────────────────────
+    # Графики обучения GAN
     epoch_histories = results.get("epoch_histories", {})
     if epoch_histories:
-        with st.expander("📈 Графики обучения GAN", expanded=False):
+        with st.expander("Графики обучения GAN", expanded=False):
             for cls_id, history in sorted(epoch_histories.items()):
                 if not history:
                     continue
@@ -398,87 +335,125 @@ with tempfile.TemporaryDirectory() as tmpdir:
                     f"D loss финал: {history[-1]['d_loss']:.4f}"
                 )
 
-    # ── YOLO validation ───────────────────────────────────────────────────────
+    # Превью синтетических объектов
+    synth_dir = results.get("synth_dir", "")
+
+    st.subheader("Сгенерированные изображения")
+
+    if synth_dir and os.path.isdir(synth_dir):
+        has_synth = False
+        for class_subdir in sorted(os.listdir(synth_dir)):
+            cls_path = os.path.join(synth_dir, class_subdir)
+            if not os.path.isdir(cls_path):
+                continue
+            try:
+                cls_id    = int(class_subdir.split("_")[1])
+                cls_label = get_class_label(cls_id, result_class_name_to_id)
+            except (IndexError, ValueError):
+                cls_label = class_subdir
+
+            synth_imgs = _preview_images(cls_path, n=8)
+            if not synth_imgs:
+                continue
+
+            has_synth = True
+            st.markdown(f"**{cls_label}**")
+            cols = st.columns(4)
+            for i, p in enumerate(synth_imgs):
+                cols[i % 4].image(str(p), width='stretch')
+
+        if not has_synth:
+            st.info(
+                "Синтетические объекты не найдены. "
+                "Возможно, ни один класс не прошёл порог обучения."
+            )
+    else:
+        st.info("Папка синтетических объектов не найдена.")
+
+    # YOLO Валидация 
+
     yolo_results = results.get("yolo")
-    if yolo_results and "error" not in yolo_results:
-        st.subheader("🎯 YOLO Validation")
-        comparison_df = pd.DataFrame(
-            [
+
+    if run_yolo:
+        st.subheader("YOLO Валидация")
+
+        if yolo_results is None:
+            st.info("YOLO-валидация не выполнялась (нет разбивки на train/val или результат пуст).")
+        elif "error" in yolo_results:
+            st.error(f"Ошибка YOLO: {yolo_results['error']}")
+        else:
+            orig = yolo_results["original"]
+            aug  = yolo_results["augmented"]
+
+            comparison_df = pd.DataFrame([
                 {
                     "Метрика":   "mAP50",
-                    "Original":  round(yolo_results["original"]["map50"], 4),
-                    "Augmented": round(yolo_results["augmented"]["map50"], 4),
-                    "Delta":     round(yolo_results["delta_map50"], 4),
+                    "Original":  orig["map50"],
+                    "Augmented": aug["map50"],
+                    "Delta":     yolo_results["delta_map50"],
+                },
+                {
+                    "Метрика":   "mAP50-95",
+                    "Original":  orig["map5095"],
+                    "Augmented": aug["map5095"],
+                    "Delta":     round(aug["map5095"] - orig["map5095"], 4),
+                },
+                {
+                    "Метрика":   "Precision",
+                    "Original":  orig["precision"],
+                    "Augmented": aug["precision"],
+                    "Delta":     round(aug["precision"] - orig["precision"], 4),
                 },
                 {
                     "Метрика":   "Recall",
-                    "Original":  round(yolo_results["original"]["recall"], 4),
-                    "Augmented": round(yolo_results["augmented"]["recall"], 4),
-                    "Delta":     round(yolo_results["delta_recall"], 4),
+                    "Original":  orig["recall"],
+                    "Augmented": aug["recall"],
+                    "Delta":     yolo_results["delta_recall"],
                 },
-            ]
-        )
-        st.dataframe(comparison_df, use_container_width=True)
-    elif yolo_results and "error" in yolo_results:
-        st.warning(f"YOLO validation завершился с ошибкой: {yolo_results['error']}")
+            ])
+            st.dataframe(comparison_df, width='stretch')
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Preview: аугментированные изображения
-    # ─────────────────────────────────────────────────────────────────────────
-
-    st.subheader("🖼 Превью аугментированных изображений")
-
-    # Определяем папку с результатами
-    preview_dir = os.path.join(output_dir, "train", "images")
-    if not os.path.isdir(preview_dir):
-        preview_dir = os.path.join(output_dir, "images")
-
-    if os.path.isdir(preview_dir):
-        preview_images = _preview_images(preview_dir, n=8)
-        if preview_images:
-            cols = st.columns(4)
-            for i, img_path in enumerate(preview_images):
-                cols[i % 4].image(
-                    str(img_path),
-                    caption=img_path.name,
-                    use_container_width=True,
-                )
-        else:
-            st.info("Изображения не найдены в папке результатов.")
-    else:
-        st.info("Папка результатов не найдена.")
-
-    # ── Превью синтетических объектов (GAN-выход) ─────────────────────────────
-    synth_dir = results.get("synth_dir", "")
-    if synth_dir and os.path.isdir(synth_dir):
-        with st.expander("🔬 Синтетические объекты (выход GAN)", expanded=False):
-            st.caption(
-                "Здесь показаны объекты, напрямую сгенерированные GAN до вставки в фон. "
-                "Если качество низкое — увеличьте число эпох или количество обучающих кропов."
+            col_m50, col_rec, col_pre, col_m5095 = st.columns(4)
+            col_m50.metric(
+                "Δ mAP50",
+                f"{yolo_results['delta_map50']:+.4f}",
+                delta_color="normal",
             )
-            for class_subdir in sorted(os.listdir(synth_dir)):
-                cls_path = os.path.join(synth_dir, class_subdir)
-                if not os.path.isdir(cls_path):
-                    continue
-                # Пробуем извлечь cls_id из имени папки class_N
-                try:
-                    cls_id = int(class_subdir.split("_")[1])
-                    cls_label = get_class_label(cls_id, result_class_name_to_id)
-                except (IndexError, ValueError):
-                    cls_label = class_subdir
+            col_rec.metric(
+                "Δ Recall",
+                f"{yolo_results['delta_recall']:+.4f}",
+                delta_color="normal",
+            )
+            col_pre.metric(
+                "Δ Precision",
+                f"{round(aug['precision'] - orig['precision'], 4):+.4f}",
+                delta_color="normal",
+            )
+            col_m5095.metric(
+                "Δ mAP50-95",
+                f"{round(aug['map5095'] - orig['map5095'], 4):+.4f}",
+                delta_color="normal",
+            )
 
-                st.markdown(f"**{cls_label}**")
-                synth_imgs = _preview_images(cls_path, n=8)
-                if synth_imgs:
-                    cols = st.columns(4)
-                    for i, p in enumerate(synth_imgs):
-                        cols[i % 4].image(str(p), use_container_width=True)
-                else:
-                    st.caption("Нет изображений.")
+            orig_hist = orig.get("history", [])
+            aug_hist  = aug.get("history", [])
+            if orig_hist and aug_hist:
+                with st.expander("Кривые обучения YOLO по эпохам", expanded=True):
+                    col_left, col_right = st.columns(2)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Export
-    # ─────────────────────────────────────────────────────────────────────────
+                    def _history_chart(history: list[dict], title: str, container):
+                        df = pd.DataFrame(history).set_index("epoch")
+                        available = [c for c in ["map50", "recall", "precision"] if c in df.columns]
+                        container.markdown(f"**{title}**")
+                        container.line_chart(
+                            df[available],
+                            color=["#2ecc71", "#e67e22", "#3498db"][:len(available)],
+                        )
+
+                    _history_chart(orig_hist, "Original dataset",   col_left)
+                    _history_chart(aug_hist,  "Augmented dataset",  col_right)
+
+    # Экспорт 
 
     zip_path = os.path.join(tmpdir, "augmented_dataset.zip")
 
@@ -491,10 +466,10 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
     with open(zip_path, "rb") as f:
         st.download_button(
-            "📦 Скачать аугментированный датасет",
+            "Скачать аугментированный датасет",
             f,
             file_name="augmented_dataset.zip",
-            use_container_width=True,
+            width='stretch',
         )
 
 

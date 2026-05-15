@@ -1,0 +1,7 @@
+[theme]
+primaryColor = "#447bcd"                    # Основной цвет элементов
+backgroundColor = "#f0f2f6"                  # Основной фон страницы
+secondaryBackgroundColor = "#d0d7e9"         # Фон для карточек, боковой панели и т.д.
+textColor = "#262730"                       # Цвет основного текста
+dataframeHeaderBackgroundColor = "#d0d7e9"
+dataframeBorderColor = "#d0d7e9"

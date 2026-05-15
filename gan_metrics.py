@@ -2,7 +2,6 @@
 Fréchet Inception Distance между двумя папками изображений (Inception v3 pool).
 Без внешних зависимостей кроме torch/torchvision/numpy.
 """
-import os
 from pathlib import Path
 
 import numpy as np

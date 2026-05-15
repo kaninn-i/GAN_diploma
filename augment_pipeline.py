@@ -17,9 +17,7 @@ from experiment_utils import create_experiment, save_experiment_config, save_met
 from yolo_validator import validate_yolo
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers: конвертация меток
-# ─────────────────────────────────────────────────────────────────────────────
+# Конвертация меток
 
 def _label_to_yolo_txt(label_path, img_path, image_objects):
     """
@@ -58,9 +56,7 @@ def _write_label(dst_path, label_path, img_path, image_objects):
         f.write(content)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers: экспорт датасета
-# ─────────────────────────────────────────────────────────────────────────────
+# Экспорт датасета 
 
 def split_and_copy(file_pairs, output_root, splits, image_objects=None):
     random.shuffle(file_pairs)
@@ -117,9 +113,7 @@ def _export_yolo_dataset(image_objects, output_dir: str) -> str:
     return output_dir
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Generation plan
-# ─────────────────────────────────────────────────────────────────────────────
+# Generation plan 
 
 def build_generation_plan(class_counts, balance_to_max=True, override_plan=None):
     if override_plan is not None:
@@ -148,9 +142,7 @@ def _build_class_names(class_counts, class_name_to_id):
     return [f"class_{cls}" for cls in sorted(class_counts.keys())]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main pipeline
-# ─────────────────────────────────────────────────────────────────────────────
+# Main pipeline 
 
 def run_full_pipeline(
     dataset_dir,
@@ -188,9 +180,9 @@ def run_full_pipeline(
     gan_train_kwargs       = gan_train_kwargs or {}
     fid_by_class           = {}
     gan_metrics_by_class   = {}
-    epoch_histories_by_cls = {}   # ← история лоссов
+    epoch_histories_by_cls = {}
 
-    # ── Этап 1: Анализ датасета + кропы ──────────────────────────────────────
+    # Анализ датасета + кропы 
 
     notify_stage(stage_callback, "Анализ датасета", 1, 5)
     stage_start = time.time()
@@ -214,7 +206,7 @@ def run_full_pipeline(
 
     stage_timings["crop_extraction"] = time.time() - stage_start
 
-    # ── Этап 2: Обучение GAN ──────────────────────────────────────────────────
+    # Обучение GAN 
 
     generation_plan = build_generation_plan(
         class_counts=class_counts,
@@ -225,7 +217,7 @@ def run_full_pipeline(
     notify_stage(stage_callback, "Обучение GAN", 2, 5)
     stage_start = time.time()
 
-    weights_dir    = os.path.join(tmp_root, "weights")
+    weights_dir     = os.path.join(tmp_root, "weights")
     trained_classes = []
 
     for cls, num_to_generate in generation_plan.items():
@@ -257,7 +249,6 @@ def run_full_pipeline(
                 gan_metrics_by_class[int(cls)]   = metrics
                 epoch_histories_by_cls[int(cls)] = metrics.get("epoch_history", [])
 
-                # обновляем img_size фактическим значением из train_gan
                 actual_size = metrics.get("img_size_used", img_size)
                 if actual_size != img_size:
                     print(f"[INFO] class_{cls}: img_size adjusted to {actual_size}")
@@ -268,7 +259,7 @@ def run_full_pipeline(
 
     stage_timings["gan_training"] = time.time() - stage_start
 
-    # ── Этап 3: Генерация объектов ────────────────────────────────────────────
+    # Генерация объектов 
 
     notify_stage(stage_callback, "Генерация объектов", 3, 5)
     stage_start = time.time()
@@ -284,7 +275,6 @@ def run_full_pipeline(
         class_weights_dir = os.path.join(weights_dir, f"class_{cls}")
         class_output_dir  = os.path.join(synth_dir, f"class_{cls}")
 
-        # Берём фактический img_size из сохранённых метрик
         actual_size = gan_metrics_by_class.get(int(cls), {}).get("img_size_used", img_size)
 
         ema_path = os.path.join(class_weights_dir, "generator_ema.pth")
@@ -326,7 +316,7 @@ def run_full_pipeline(
 
     stage_timings["generation"] = time.time() - stage_start
 
-    # ── Этап 4: Интеграция ────────────────────────────────────────────────────
+    # Интеграция объектов 
 
     notify_stage(stage_callback, "Интеграция объектов", 4, 5)
     stage_start = time.time()
@@ -421,7 +411,7 @@ def run_full_pipeline(
     final_pairs = original_pairs + temp_generated
     stage_timings["integration"] = time.time() - stage_start
 
-    # ── Этап 5: Экспорт ───────────────────────────────────────────────────────
+    # Экспорт 
 
     notify_stage(stage_callback, "Экспорт датасета", 5, 5)
     stage_start = time.time()
@@ -446,18 +436,17 @@ def run_full_pipeline(
     stage_timings["export"] = time.time() - stage_start
     print(f"Augmented dataset saved to {output_dir}")
 
-    # ── Этап 6 (опц.): YOLO validation ───────────────────────────────────────
+    # YOLO validation 
 
     yolo_results = None
 
     if run_yolo_validation and split_config:
-        notify_stage(stage_callback, "YOLO validation", 6, 6)
+        notify_stage(stage_callback, "Валидация YOLO", 6, 6)
         stage_start = time.time()
 
         try:
             class_names = _build_class_names(class_counts, class_name_to_id)
 
-            # Для XML-датасетов предварительно конвертируем в YOLO-формат
             is_xml_dataset = bool(class_name_to_id)
 
             if is_xml_dataset:
@@ -499,42 +488,40 @@ def run_full_pipeline(
 
         stage_timings["yolo_validation"] = time.time() - stage_start
 
-    # ── Логирование эксперимента ──────────────────────────────────────────────
-
     if log_experiment:
         exp_dir = create_experiment()
         save_experiment_config(
             exp_dir,
             {
-                "dataset_dir":         dataset_dir,
-                "output_dir":          output_dir,
-                "model_type":          model_type,
-                "epochs":              epochs,
-                "img_size":            img_size,
+                "dataset_dir":          dataset_dir,
+                "output_dir":           output_dir,
+                "model_type":           model_type,
+                "epochs":               epochs,
+                "img_size":             img_size,
                 "crop_jitter_variants": crop_jitter_variants,
-                "crop_jitter_frac":    crop_jitter_frac,
-                "gan_train_kwargs":    gan_train_kwargs,
-                "compute_fid":         compute_fid,
-                "run_yolo_validation": run_yolo_validation,
-                "class_name_to_id":    class_name_to_id,
+                "crop_jitter_frac":     crop_jitter_frac,
+                "gan_train_kwargs":     gan_train_kwargs,
+                "compute_fid":          compute_fid,
+                "run_yolo_validation":  run_yolo_validation,
+                "class_name_to_id":     class_name_to_id,
             },
         )
         save_metrics(
             exp_dir,
             {
-                "timings":      stage_timings,
-                "gan_fid":      fid_by_class,
-                "gan_metrics":  gan_metrics_by_class,
-                "yolo":         yolo_results,
+                "timings":     stage_timings,
+                "gan_fid":     fid_by_class,
+                "gan_metrics": gan_metrics_by_class,
+                "yolo":        yolo_results,
             },
         )
 
     return {
-        "timings":         stage_timings,
-        "yolo":            yolo_results,
-        "gan_fid":         fid_by_class or None,
-        "gan_metrics":     gan_metrics_by_class or None,
-        "epoch_histories": epoch_histories_by_cls,   # ← новое
+        "timings":          stage_timings,
+        "yolo":             yolo_results,
+        "gan_fid":          fid_by_class or None,
+        "gan_metrics":      gan_metrics_by_class or None,
+        "epoch_histories":  epoch_histories_by_cls,
         "class_name_to_id": class_name_to_id,
-        "synth_dir":       synth_dir,                # ← для превью
+        "synth_dir":        synth_dir,
     }

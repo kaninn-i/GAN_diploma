@@ -2,7 +2,6 @@
 DCGAN-вариант с spectral norm в дискриминаторе (без BatchNorm в D)
 и без BatchNorm перед Tanh в генераторе — для сравнения с gan_model.py.
 """
-import torch
 import torch.nn as nn
 from torch.nn.utils import spectral_norm
 

@@ -10,7 +10,7 @@ class MappingNetwork(nn.Module):
         layers = []
         in_dim = latent_dim
         for _ in range(depth):
-            layers.append(nn.Linear(in_dim, style_dim))          # без spectral_norm
+            layers.append(nn.Linear(in_dim, style_dim))
             layers.append(nn.LeakyReLU(0.2))
             in_dim = style_dim
         self.net = nn.Sequential(*layers)
@@ -91,7 +91,6 @@ class Generator(nn.Module):
     def __init__(self, latent_dim=128, style_dim=256, img_size=64):
         super().__init__()
         self.mapping = MappingNetwork(latent_dim, style_dim)
-        # Уменьшаем дисперсию константы
         self.const = nn.Parameter(torch.randn(1, 512, 4, 4) * 0.1)
 
         blocks = []
